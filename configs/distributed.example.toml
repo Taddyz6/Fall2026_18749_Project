@@ -1,0 +1,31 @@
+# Copy the same edited file to every machine before starting the processes.
+# Replace 192.168.1.20 with the LAN address of the machine hosting S1 and LFD1.
+
+[server.S1]
+bind_host = "0.0.0.0"
+advertised_host = "192.168.1.20"
+client_port = 5001
+heartbeat_port = 6001
+
+[client.C1]
+server_ids = ["S1"]
+connect_timeout = 2.0
+read_timeout = 2.0
+
+[client.C2]
+server_ids = ["S1"]
+connect_timeout = 2.0
+read_timeout = 2.0
+
+[client.C3]
+server_ids = ["S1"]
+connect_timeout = 2.0
+read_timeout = 2.0
+
+[lfd.LFD1]
+server_id = "S1"
+heartbeat_freq = 2.0
+connect_timeout = 2.0
+read_timeout = 2.0
+initial_backoff = 0.5
+max_backoff = 5.0

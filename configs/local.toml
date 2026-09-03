@@ -1,0 +1,28 @@
+[server.S1]
+bind_host = "127.0.0.1"
+advertised_host = "127.0.0.1"
+client_port = 5001
+heartbeat_port = 6001
+
+[client.C1]
+server_ids = ["S1"]
+connect_timeout = 2.0
+read_timeout = 2.0
+
+[client.C2]
+server_ids = ["S1"]
+connect_timeout = 2.0
+read_timeout = 2.0
+
+[client.C3]
+server_ids = ["S1"]
+connect_timeout = 2.0
+read_timeout = 2.0
+
+[lfd.LFD1]
+server_id = "S1"
+heartbeat_freq = 2.0
+connect_timeout = 2.0
+read_timeout = 2.0
+initial_backoff = 0.5
+max_backoff = 5.0
