@@ -328,7 +328,7 @@ Verify LFD1 is connecting to `heartbeat_port`.
 
 Verify clients are connecting to `client_port`.
 
----
+----
 
 ## M1 Verification Checklist
 
