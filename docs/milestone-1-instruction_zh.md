@@ -1,5 +1,7 @@
 # Milestone 1 操作指南（中文简版）
 
+**macOS 用户完成环境安装后，可使用[一键打开指令](#方式-a一键打开macos)，同时启动五个终端窗口。**
+
 [英文原版](milestone-1-instructions.md) · [项目首页](../README.md)
 
 本指南沿用英文版的操作顺序。M1 运行 5 个进程：服务端 S1、故障检测器 LFD1，以及客户端 C1、C2、C3。客户端各自累加自己的计数，心跳不改变计数。
@@ -26,6 +28,45 @@ python -m pip install -e '.[dev]'
 预期：测试全部通过，第二条命令最后显示 `SMOKE PASS`。它会自动检查三个客户端各发送一次后的状态 `{"C1": 1, "C2": 1, "C3": 1}`，以及心跳和服务端故障检测。
 
 ## 3. 本机演示：打开 5 个终端
+
+### 方式 A：一键打开（macOS）
+
+完成第 1、2 步后，在**仓库根目录**将下面整段一次性粘贴到终端执行。它会用 macOS 自带的 Terminal 打开 5 个窗口，自动进入项目、激活环境，并分别启动 S1、LFD1、C1、C2、C3；窗口标题会标出进程名称。
+
+**只执行一次；如果已有演示进程在运行，先在对应窗口按 Ctrl-C 停止。** 首次运行若系统询问是否允许控制 Terminal，选择允许。
+
+```bash
+osascript - "$PWD" <<'APPLESCRIPT'
+on run argv
+    set projectRoot to item 1 of argv
+    set jobs to {¬
+        {"S1", "ft-server --config configs/local.toml --server-id S1"}, ¬
+        {"LFD1", "ft-lfd --config configs/local.toml --lfd-id LFD1"}, ¬
+        {"C1", "ft-client --config configs/local.toml --client-id C1"}, ¬
+        {"C2", "ft-client --config configs/local.toml --client-id C2"}, ¬
+        {"C3", "ft-client --config configs/local.toml --client-id C3"}}
+    tell application "Terminal"
+        repeat with job in jobs
+            set launchCommand to "cd " & quoted form of projectRoot & " && source .venv/bin/activate && " & item 2 of job
+            set demoTab to do script launchCommand
+            set custom title of demoTab to "M1 - " & item 1 of job
+        end repeat
+        activate
+    end tell
+end run
+APPLESCRIPT
+```
+
+打开后，按下面顺序检查：
+
+1. **看正常运行：**三个客户端持续出现 `Sending` / `Received`，S1 的计数不断增加，LFD1 持续收到心跳回复。若启动瞬间出现连接失败，等待客户端自动重试。
+2. **测试故障：**只在 **M1 - S1** 窗口按 Ctrl-C；LFD1 应显示 `S1 has died`，客户端继续重试。
+3. **测试恢复：**在原来的 S1 窗口执行 `ft-server --config configs/local.toml --server-id S1`；客户端应恢复发送，服务端从零重新计数。
+4. **结束演示：**在这 5 个窗口分别按 Ctrl-C，再关闭窗口。
+
+完成一键启动后，**跳过下面的手动启动**。调整发送模式见第 4 步，完整故障测试说明见第 5 步。
+
+### 方式 B：手动打开
 
 每个终端都进入仓库根目录，按下面顺序启动。启动后保留终端运行，不要关闭。
 
