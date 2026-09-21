@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -104,6 +105,21 @@ class ClientApp:
 
     async def close(self) -> None:
         await self._drop_connection()
+
+
+async def run_automatic(client: ClientApp, interval: float = 1.0) -> None:
+    """Send immediately, then wait between attempts until cancelled."""
+
+    if not math.isfinite(interval) or interval <= 0:
+        raise ValueError("interval must be a finite positive number of seconds")
+
+    while True:
+        try:
+            await client.send_increment()
+        except (EOFError, TimeoutError, ProtocolError, ConnectionError, OSError) as exc:
+            client.logger.error(client.client_id, str(exc) or type(exc).__name__)
+        # Pace failures as well as successes to avoid a busy reconnect loop.
+        await asyncio.sleep(interval)
 
 
 async def run_interactive(
