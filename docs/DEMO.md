@@ -1,6 +1,6 @@
 # Milestone 2 demonstration checklist
 
-Use a separate console for every process. Keep the three client windows and GFD visible when injecting faults. The commands and machine layout are in the [M2 guide](milestone-2-instructions.md).
+Use a separate console for every process: 10 visible windows in total. `python3 scripts/m2_demo.py` opens them on macOS and leaves them running. Keep the three client windows and GFD visible when manually injecting faults. The commands and machine layout are in the [M2 guide](milestone-2-instructions.md).
 
 | Project guide requirement | What to demonstrate | Implementation |
 | --- | --- | --- |
@@ -28,8 +28,10 @@ During the demo:
 2. Start each replica separately and show the membership count changing from zero to three.
 3. Start the three automatic clients. Pick one client request number and trace its three sends and three replies.
 4. Show the first delivery and the two duplicate-discard messages.
-5. Stop S1. Show the failed local heartbeat, the delete report, and the GFD membership change.
-6. Let several more requests complete, then stop S2. Show continuing traffic between each client and S3.
+5. Press Ctrl-C in the S1 window. Show the failed local heartbeat, the delete report, and the GFD membership change without pausing the automatic clients.
+6. Let several more requests complete, then press Ctrl-C in the S2 window. Show continuing traffic between each client and S3.
 7. End the demo without restarting replicas. Restart the complete system for another run.
 
 The guide's M2 rubric explicitly requires automatic continuous clients, even though a general note elsewhere defers client automation. The default M2 client follows that rubric. The guide does not require an RM, checkpoint transfer, or automatic recovery for this milestone.
+
+`scripts/m2_smoke.py` is a separate headless regression test that injects failures automatically and stops after 60 delivered requests per client. That limit is a test condition, not a live-demo requirement.
