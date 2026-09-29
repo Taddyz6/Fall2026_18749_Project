@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ft-system"
-version = "0.1.0"
+version = "0.2.0"
 requires-python = ">=3.11"
 dependencies = []
 
@@ -15,6 +15,7 @@ dev = ["pytest>=8", "pytest-asyncio>=0.24"]
 ft-server = "ft_system.server.main:main"
 ft-client = "ft_system.client.main:main"
 ft-lfd = "ft_system.lfd.main:main"
+ft-gfd = "ft_system.gfd.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

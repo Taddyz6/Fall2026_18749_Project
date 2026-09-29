@@ -1,0 +1,63 @@
+[gfd]
+bind_host = "0.0.0.0"
+advertised_host = "192.168.1.10"
+port = 7000
+heartbeat_freq = 1.0
+read_timeout = 2.0
+
+[server.S1]
+bind_host = "0.0.0.0"
+advertised_host = "192.168.1.11"
+client_port = 5001
+heartbeat_port = 6001
+
+[server.S2]
+bind_host = "0.0.0.0"
+advertised_host = "192.168.1.12"
+client_port = 5002
+heartbeat_port = 6002
+
+[server.S3]
+bind_host = "0.0.0.0"
+advertised_host = "192.168.1.13"
+client_port = 5003
+heartbeat_port = 6003
+
+[client.C1]
+server_ids = ["S1", "S2", "S3"]
+connect_timeout = 1.0
+read_timeout = 2.0
+
+[client.C2]
+server_ids = ["S1", "S2", "S3"]
+connect_timeout = 1.0
+read_timeout = 2.0
+
+[client.C3]
+server_ids = ["S1", "S2", "S3"]
+connect_timeout = 1.0
+read_timeout = 2.0
+
+[lfd.LFD1]
+server_id = "S1"
+heartbeat_freq = 1.0
+connect_timeout = 1.0
+read_timeout = 1.0
+initial_backoff = 0.2
+max_backoff = 1.0
+
+[lfd.LFD2]
+server_id = "S2"
+heartbeat_freq = 1.0
+connect_timeout = 1.0
+read_timeout = 1.0
+initial_backoff = 0.2
+max_backoff = 1.0
+
+[lfd.LFD3]
+server_id = "S3"
+heartbeat_freq = 1.0
+connect_timeout = 1.0
+read_timeout = 1.0
+initial_backoff = 0.2
+max_backoff = 1.0
