@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from dataclasses import replace
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from ft_system.client.app import ClientApp, ServerEndpoint
 from ft_system.common.config import load_config
 from ft_system.common.logging import EventLogger
 from ft_system.lfd.app import HeartbeatEndpoint, LfdApp
 from ft_system.server.app import ServerApp
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 async def wait_until(predicate, timeout: float, description: str) -> None:

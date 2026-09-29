@@ -21,6 +21,8 @@ class MessageType(StrEnum):
     HEARTBEAT = "heartbeat"
     HEARTBEAT_ACK = "heartbeat_ack"
     ERROR = "error"
+    REGISTER = "register"
+    MEMBERSHIP = "membership"
 
 
 def _require_mapping(value: Any, field: str) -> dict[str, Any]:
@@ -100,6 +102,12 @@ def validate_message(message: Mapping[str, Any]) -> dict[str, Any]:
         validated["heartbeat_count"] = _require_positive_int(
             validated.get("heartbeat_count"), "heartbeat_count"
         )
+    elif message_type in {MessageType.REGISTER, MessageType.MEMBERSHIP}:
+        payload["replica_id"] = _require_string(payload.get("replica_id"), "replica_id")
+        if not isinstance(payload.get("healthy"), bool):
+            raise ProtocolError("healthy must be a boolean")
+        if validated["destination"] != "GFD":
+            raise ProtocolError("membership messages must be addressed to GFD")
     else:
         payload["code"] = _require_string(payload.get("code"), "code")
         payload["detail"] = _require_string(payload.get("detail"), "detail")
@@ -212,3 +220,12 @@ def build_error(
     if request_id is not None:
         message["request_id"] = request_id
     return validate_message(message)
+
+
+def build_membership(lfd_id: str, replica_id: str, healthy: bool, *, register: bool = False) -> dict[str, Any]:
+    return validate_message({
+        "version": PROTOCOL_VERSION,
+        "type": MessageType.REGISTER if register else MessageType.MEMBERSHIP,
+        "source": lfd_id, "destination": "GFD",
+        "payload": {"replica_id": replica_id, "healthy": healthy},
+    })

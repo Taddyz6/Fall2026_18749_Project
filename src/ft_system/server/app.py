@@ -45,10 +45,20 @@ class ClientListener:
         self._state_machine = state_machine
         self._logger = logger
         self._processing_lock = asyncio.Lock()
+        self._last_replies: dict[str, tuple[int, str, dict[str, Any]]] = {}
 
     async def _process(self, request: dict[str, Any]) -> dict[str, Any]:
         async with self._processing_lock:
             self._logger.received(request, "request")
+            previous = self._last_replies.get(request["client_id"])
+            if previous is not None and request["request_num"] <= previous[0]:
+                if request["request_num"] == previous[0] and request["payload"]["operation"] == previous[1]:
+                    self._logger.event(f"{self._replica_id}: replaying reply for {request['request_id']}")
+                    self._logger.sending(previous[2], "reply")
+                    return previous[2]
+                return build_error(self._replica_id, request["client_id"], "stale_request",
+                                   "request number is stale or was reused for another operation",
+                                   request["request_id"])
             before = self._state_machine.snapshot()
             self._logger.state(self._replica_id, before, "before", request)
             try:
@@ -74,6 +84,9 @@ class ClientListener:
                 self._replica_id, transition.after, "after", request
             )
             reply = build_client_reply(request, transition.client_value)
+            self._last_replies[request["client_id"]] = (
+                request["request_num"], request["payload"]["operation"], reply
+            )
             self._logger.sending(reply, "reply")
             return reply
 

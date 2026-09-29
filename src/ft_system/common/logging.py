@@ -120,3 +120,14 @@ class EventLogger:
 
     def error(self, component_id: str, detail: str) -> None:
         self._write(f"{component_id} ERROR: {detail}", "error")
+
+    def event(self, text: str) -> None:
+        self._write(text)
+
+    def duplicate(self, request_num: int, replica_id: str) -> None:
+        self._write(f"request_num {request_num}: Discarded duplicate reply from {replica_id}", "received")
+
+    def membership(self, members: list[str]) -> None:
+        count = len(members)
+        suffix = ": " + ", ".join(members) if members else ""
+        self._write(f"GFD: {count} {'member' if count == 1 else 'members'}{suffix}", "recovered")

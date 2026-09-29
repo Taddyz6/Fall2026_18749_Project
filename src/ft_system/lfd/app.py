@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from collections.abc import Callable
 
 from ft_system.common.config import LfdConfig
 from ft_system.common.logging import EventLogger
@@ -35,7 +36,9 @@ class LfdApp:
         config: LfdConfig,
         endpoint: HeartbeatEndpoint,
         logger: EventLogger,
+        on_health_change: Callable[[bool], None] | None = None,
     ) -> None:
+        self.on_health_change = on_health_change
         self.config = config
         self.endpoint = endpoint
         self.logger = logger
@@ -80,6 +83,8 @@ class LfdApp:
         was_healthy = self._healthy
         self._healthy = False
         if was_healthy:
+            if self.on_health_change is not None:
+                self.on_health_change(False)
             self.logger.server_failed(self.endpoint.replica_id)
 
     @staticmethod
@@ -124,7 +129,10 @@ class LfdApp:
         )
 
         recovering = self._ever_healthy and not self._healthy
+        changed = not self._healthy
         self._healthy = True
+        if changed and self.on_health_change is not None:
+            self.on_health_change(True)
         self._ever_healthy = True
         self._backoff.reset()
         if recovering:

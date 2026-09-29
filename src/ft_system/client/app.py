@@ -118,7 +118,6 @@ async def run_automatic(client: ClientApp, interval: float = 1.0) -> None:
             await client.send_increment()
         except (EOFError, TimeoutError, ProtocolError, ConnectionError, OSError) as exc:
             client.logger.error(client.client_id, str(exc) or type(exc).__name__)
-        # Pace failures as well as successes to avoid a busy reconnect loop.
         await asyncio.sleep(interval)
 
 

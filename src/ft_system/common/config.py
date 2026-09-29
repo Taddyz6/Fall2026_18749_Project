@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tomllib
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,10 +44,20 @@ class LfdConfig:
 
 
 @dataclass(frozen=True)
+class GfdConfig:
+    bind_host: str
+    advertised_host: str
+    port: int
+    heartbeat_freq: float = 1.0
+    read_timeout: float = 2.0
+
+
+@dataclass(frozen=True)
 class AppConfig:
     servers: Mapping[str, ServerConfig]
     clients: Mapping[str, ClientConfig]
     lfds: Mapping[str, LfdConfig]
+    gfd: GfdConfig | None = None
 
     def server(self, replica_id: str) -> ServerConfig:
         try:
@@ -87,7 +98,7 @@ def _port(value: Any, field: str) -> int:
 
 
 def _positive_number(value: Any, field: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
         raise ConfigError(f"{field} must be positive")
     return float(value)
 
@@ -224,7 +235,18 @@ def load_config(path: str | Path) -> AppConfig:
         if lfd.server_id not in servers:
             raise ConfigError(f"LFD {lfd.lfd_id} references unknown server {lfd.server_id}")
 
+    gfd = None
+    if "gfd" in data:
+        raw = _section(data, "gfd")
+        gfd = GfdConfig(
+            bind_host=_non_empty_string(raw.get("bind_host"), "gfd.bind_host"),
+            advertised_host=_non_empty_string(raw.get("advertised_host"), "gfd.advertised_host"),
+            port=_port(raw.get("port"), "gfd.port"),
+            heartbeat_freq=_positive_number(raw.get("heartbeat_freq", 1.0), "gfd.heartbeat_freq"),
+            read_timeout=_positive_number(raw.get("read_timeout", 2.0), "gfd.read_timeout"),
+        )
     return AppConfig(
+        gfd=gfd,
         servers=MappingProxyType(servers),
         clients=MappingProxyType(clients),
         lfds=MappingProxyType(lfds),
