@@ -20,7 +20,7 @@ Like the [M1 five-window launcher](docs/milestone-1-instruction_zh.md), this ope
 
 For the live fault demonstration, **press Ctrl-C yourself** in the S1 window. Watch LFD1 report the failure, GFD show only S2 and S3, and all clients continue. After several more requests, press Ctrl-C in S2; GFD should show only S3 while clients keep receiving replies. Stop the remaining processes in their own windows when finished. `--interval 0.5` changes the client delay; the default is one second. The visual launcher uses the fixed ports in `configs/m2.local.toml` and refuses to start if they are occupied.
 
-The [English M2 guide](docs/milestone-2-instructions.md) and [Chinese M2 guide](docs/milestone-2-instructions_zh.md) give the exact observation checklist and manual commands.
+The [English M2 guide](docs/milestone-2-instructions.md) and [Chinese M2 guide](docs/milestone-2-instructions_zh.md) give the observation checklist. For the required four-computer layout, follow the separate [Chinese distributed deployment tutorial](docs/milestone-2-distributed-deployment_zh.md), including IP discovery, shared config distribution, and per-machine startup commands.
 
 ## Automated regression check
 
