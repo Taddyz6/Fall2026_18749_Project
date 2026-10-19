@@ -131,3 +131,11 @@ class EventLogger:
         count = len(members)
         suffix = ": " + ", ".join(members) if members else ""
         self._write(f"GFD: {count} {'member' if count == 1 else 'members'}{suffix}", "recovered")
+
+    def checkpoint_sent(self, source: str, destination: str, state: Mapping[str, int], count: int) -> None:
+        self._write(f"{source} sending checkpoint #{count} to {destination}: my_state = "
+                    f"{json.dumps(dict(state), sort_keys=True)}", "sending")
+
+    def checkpoint_received(self, destination: str, source: str, state: Mapping[str, int], count: int) -> None:
+        self._write(f"{destination} received checkpoint #{count} from {source}: my_state = "
+                    f"{json.dumps(dict(state), sort_keys=True)}", "received")

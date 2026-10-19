@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
-from ft_system.common.config import ServerConfig
+from ft_system.common.config import PassiveConfig, ServerConfig
 from ft_system.common.logging import EventLogger
 from ft_system.common.protocol import (
     MessageType,
@@ -14,6 +14,7 @@ from ft_system.common.protocol import (
     build_client_reply,
     build_error,
     build_heartbeat_ack,
+    build_checkpoint,
 )
 from ft_system.common.transport import (
     MAX_MESSAGE_BYTES,
@@ -21,6 +22,7 @@ from ft_system.common.transport import (
     read_message,
     write_message,
 )
+from ft_system.common.retry import open_connection_with_timeout
 from ft_system.server.state_machine import (
     DeterministicStateMachine,
     StateMachineError,
@@ -124,6 +126,44 @@ class ClientListener:
         finally:
             await close_writer(writer)
 
+    async def checkpoint_snapshot(self) -> dict[str, int]:
+        async with self._processing_lock:
+            return self._state_machine.snapshot()
+
+    async def restore_checkpoint(self, state: dict[str, int]) -> None:
+        async with self._processing_lock:
+            self._state_machine.restore(state)
+
+
+class CheckpointListener:
+    """Receive state transfers on the primary-to-backup secondary channel."""
+
+    def __init__(self, replica_id: str, client_listener: ClientListener, logger: EventLogger) -> None:
+        self._replica_id = replica_id
+        self._client_listener = client_listener
+        self._logger = logger
+        self.checkpoint_count = 0
+
+    async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            while True:
+                try:
+                    message = await read_message(reader)
+                except EOFError:
+                    return
+                if (message["type"] != MessageType.CHECKPOINT
+                        or message["destination"] != self._replica_id):
+                    raise ProtocolError("checkpoint port accepts only checkpoints addressed to this replica")
+                state = message["payload"]["state"]
+                count = message["payload"]["checkpoint_count"]
+                await self._client_listener.restore_checkpoint(state)
+                self.checkpoint_count = count
+                self._logger.checkpoint_received(self._replica_id, message["source"], state, count)
+        except (ConnectionError, OSError, ProtocolError) as exc:
+            self._logger.error(self._replica_id, f"checkpoint connection: {str(exc) or type(exc).__name__}")
+        finally:
+            await close_writer(writer)
+
 
 class HeartbeatListener:
     """Serve heartbeat traffic without access to application state."""
@@ -179,6 +219,8 @@ class ServerApp:
         config: ServerConfig,
         client_ids: Iterable[str],
         logger: EventLogger,
+        passive: PassiveConfig | None = None,
+        all_servers: Iterable[ServerConfig] = (),
     ) -> None:
         self.config = config
         self.state_machine = DeterministicStateMachine(client_ids)
@@ -186,10 +228,18 @@ class ServerApp:
             config.replica_id, self.state_machine, logger
         )
         self.heartbeat_listener = HeartbeatListener(config.replica_id, logger)
+        self._logger = logger
+        self._passive = passive
+        self._servers_by_id = {server.replica_id: server for server in all_servers}
+        self.checkpoint_listener = CheckpointListener(config.replica_id, self.client_listener, logger)
         self._client_server: asyncio.Server | None = None
         self._heartbeat_server: asyncio.Server | None = None
+        self._checkpoint_server: asyncio.Server | None = None
         self._active_writers: set[asyncio.StreamWriter] = set()
         self._handler_tasks: set[asyncio.Task[None]] = set()
+        self._checkpoint_task: asyncio.Task[None] | None = None
+        self._checkpoint_writers: dict[str, asyncio.StreamWriter] = {}
+        self._checkpoint_count = 0
 
     @property
     def bound_client_port(self) -> int:
@@ -198,6 +248,10 @@ class ServerApp:
     @property
     def bound_heartbeat_port(self) -> int:
         return self._bound_port(self._heartbeat_server, "heartbeat")
+
+    @property
+    def bound_checkpoint_port(self) -> int:
+        return self._bound_port(self._checkpoint_server, "checkpoint")
 
     @staticmethod
     def _bound_port(server: asyncio.Server | None, name: str) -> int:
@@ -247,23 +301,74 @@ class ServerApp:
             await self._client_server.wait_closed()
             self._client_server = None
             raise
+        if self._passive is not None:
+            assert self.config.checkpoint_port is not None
+            self._checkpoint_server = await asyncio.start_server(
+                lambda reader, writer: self._serve_connection(self.checkpoint_listener.handle, reader, writer),
+                self.config.bind_host, self.config.checkpoint_port, limit=MAX_MESSAGE_BYTES + 1,
+            )
+            if self.config.replica_id == self._passive.primary_id:
+                self._checkpoint_task = asyncio.create_task(self._checkpoint_loop())
 
     async def serve_forever(self) -> None:
         if self._client_server is None or self._heartbeat_server is None:
             raise RuntimeError("server is not started")
-        await asyncio.gather(
+        servers = [
             self._client_server.serve_forever(),
             self._heartbeat_server.serve_forever(),
-        )
+        ]
+        if self._checkpoint_server is not None:
+            servers.append(self._checkpoint_server.serve_forever())
+        await asyncio.gather(*servers)
+
+    async def _checkpoint_loop(self) -> None:
+        assert self._passive is not None
+        backups = tuple(server for server_id, server in self._servers_by_id.items()
+                        if server_id != self.config.replica_id)
+        try:
+            while True:
+                await asyncio.sleep(self._passive.checkpoint_freq)
+                state = await self.client_listener.checkpoint_snapshot()
+                count = self._checkpoint_count
+                for backup in backups:
+                    writer = self._checkpoint_writers.get(backup.replica_id)
+                    if writer is None:
+                        try:
+                            _, writer = await open_connection_with_timeout(
+                                backup.advertised_host, backup.checkpoint_port, self._passive.checkpoint_freq
+                            )
+                            self._checkpoint_writers[backup.replica_id] = writer
+                        except (TimeoutError, ConnectionError, OSError) as exc:
+                            self._logger.error(self.config.replica_id, f"checkpoint to {backup.replica_id} unavailable: {exc}")
+                            continue
+                    try:
+                        message = build_checkpoint(self.config.replica_id, backup.replica_id, state, count)
+                        await write_message(writer, message)
+                        self._logger.checkpoint_sent(self.config.replica_id, backup.replica_id, state, count)
+                    except (ConnectionError, OSError, ProtocolError) as exc:
+                        self._logger.error(self.config.replica_id, f"checkpoint to {backup.replica_id} failed: {exc}")
+                        self._checkpoint_writers.pop(backup.replica_id, None)
+                        await close_writer(writer)
+                self._checkpoint_count += 1
+        except asyncio.CancelledError:
+            raise
 
     async def close(self) -> None:
         servers = [
             server
-            for server in (self._client_server, self._heartbeat_server)
+            for server in (self._client_server, self._heartbeat_server, self._checkpoint_server)
             if server is not None
         ]
         self._client_server = None
         self._heartbeat_server = None
+        self._checkpoint_server = None
+        if self._checkpoint_task is not None:
+            self._checkpoint_task.cancel()
+            await asyncio.gather(self._checkpoint_task, return_exceptions=True)
+            self._checkpoint_task = None
+        if self._checkpoint_writers:
+            await asyncio.gather(*(close_writer(writer) for writer in self._checkpoint_writers.values()))
+            self._checkpoint_writers.clear()
         for server in servers:
             server.close()
 

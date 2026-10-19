@@ -22,7 +22,8 @@ def build_parser() -> argparse.ArgumentParser:
 async def run(args: argparse.Namespace) -> None:
     app_config = load_config(args.config)
     server_config = app_config.server(args.server_id)
-    app = ServerApp(server_config, tuple(app_config.clients), EventLogger())
+    app = ServerApp(server_config, tuple(app_config.clients), EventLogger(),
+                    app_config.passive, tuple(app_config.servers.values()))
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):

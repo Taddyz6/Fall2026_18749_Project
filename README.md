@@ -28,6 +28,18 @@ The [English M2 guide](docs/milestone-2-instructions.md) and [Chinese M2 guide](
 python3 scripts/m2_smoke.py
 ```
 
+## Milestone 3
+
+M3 adds passive replication in `configs/m3.local.toml`. S1 is the configured primary: clients establish their rubric-required connections to S1-S3 but send requests and receive replies only through S1. S1 periodically sends a state checkpoint over each backup's dedicated checkpoint port; S2 and S3 log receipt and replace their state. Backup failures do not interrupt primary service.
+
+```bash
+python3 scripts/m3_smoke.py
+```
+
+The M3 smoke test launches GFD, three LFDs, S1-S3, and C1-C3, verifies primary-only replies and checkpoint transfer, then stops S2 and S3 one at a time while clients continue through S1. Evidence is written to `logs/m3-smoke/`.
+
+For the required four-computer setup and classroom demo sequence, use the [Chinese M3 distributed demo guide](docs/milestone-3-distributed-demo_zh.md).
+
 This separate, headless test chooses available loopback ports, launches ten child processes, automatically stops S1 and S2, and checks membership, duplicate replies, client progress, and S3 state. It finishes after each client delivers requests 1–60 exactly once, then cleans up. Per-process logs, the generated config, and `result.json` are saved in `logs/m2-smoke/`; use `--output PATH` to select another directory. The **60-request limit belongs to this test**, not to the live M2 demo or the course requirement.
 
 ## Client and replica behavior
@@ -42,6 +54,7 @@ Each replica preserves the M1 per-client counter state machine. It remembers the
 python3 -m pytest -q
 python3 scripts/m1_smoke.py
 python3 scripts/m2_smoke.py
+python3 scripts/m3_smoke.py
 ```
 
 The tests need pytest installed; the two smoke scripts and visual launcher use the Python standard library. Local loopback testing does not establish that the course's four-machine network setup works. See [design notes](docs/DESIGN.md), the [demo checklist](docs/DEMO.md), and the [distributed config example](configs/m2.distributed.example.toml).

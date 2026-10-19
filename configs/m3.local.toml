@@ -1,0 +1,64 @@
+[gfd]
+bind_host = "127.0.0.1"
+advertised_host = "127.0.0.1"
+port = 7100
+heartbeat_freq = 1.0
+read_timeout = 2.0
+
+[passive]
+primary_id = "S1"
+checkpoint_freq = 0.5
+
+[server.S1]
+bind_host = "127.0.0.1"
+advertised_host = "127.0.0.1"
+client_port = 5101
+heartbeat_port = 6101
+checkpoint_port = 8101
+
+[server.S2]
+bind_host = "127.0.0.1"
+advertised_host = "127.0.0.1"
+client_port = 5102
+heartbeat_port = 6102
+checkpoint_port = 8102
+
+[server.S3]
+bind_host = "127.0.0.1"
+advertised_host = "127.0.0.1"
+client_port = 5103
+heartbeat_port = 6103
+checkpoint_port = 8103
+
+[client.C1]
+server_ids = ["S1", "S2", "S3"]
+connect_timeout = 1.0
+read_timeout = 2.0
+
+[client.C2]
+server_ids = ["S1", "S2", "S3"]
+connect_timeout = 1.0
+read_timeout = 2.0
+
+[client.C3]
+server_ids = ["S1", "S2", "S3"]
+connect_timeout = 1.0
+read_timeout = 2.0
+
+[lfd.LFD1]
+server_id = "S1"
+heartbeat_freq = 1.0
+connect_timeout = 1.0
+read_timeout = 1.0
+
+[lfd.LFD2]
+server_id = "S2"
+heartbeat_freq = 1.0
+connect_timeout = 1.0
+read_timeout = 1.0
+
+[lfd.LFD3]
+server_id = "S3"
+heartbeat_freq = 1.0
+connect_timeout = 1.0
+read_timeout = 1.0

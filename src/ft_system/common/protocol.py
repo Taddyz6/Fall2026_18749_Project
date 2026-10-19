@@ -23,6 +23,7 @@ class MessageType(StrEnum):
     ERROR = "error"
     REGISTER = "register"
     MEMBERSHIP = "membership"
+    CHECKPOINT = "checkpoint"
 
 
 def _require_mapping(value: Any, field: str) -> dict[str, Any]:
@@ -108,6 +109,17 @@ def validate_message(message: Mapping[str, Any]) -> dict[str, Any]:
             raise ProtocolError("healthy must be a boolean")
         if validated["destination"] != "GFD":
             raise ProtocolError("membership messages must be addressed to GFD")
+    elif message_type is MessageType.CHECKPOINT:
+        if any(field in validated for field in ("client_id", "replica_id", "request_num", "request_id")):
+            raise ProtocolError("checkpoint message type cannot carry client request fields")
+        payload["checkpoint_count"] = _require_non_negative_int(
+            payload.get("checkpoint_count"), "checkpoint_count"
+        )
+        state = _require_mapping(payload.get("state"), "state")
+        for client_id, value in state.items():
+            _require_string(client_id, "state client id")
+            _require_non_negative_int(value, "state value")
+        payload["state"] = state
     else:
         payload["code"] = _require_string(payload.get("code"), "code")
         payload["detail"] = _require_string(payload.get("detail"), "detail")
@@ -228,4 +240,14 @@ def build_membership(lfd_id: str, replica_id: str, healthy: bool, *, register: b
         "type": MessageType.REGISTER if register else MessageType.MEMBERSHIP,
         "source": lfd_id, "destination": "GFD",
         "payload": {"replica_id": replica_id, "healthy": healthy},
+    })
+
+
+def build_checkpoint(source: str, destination: str, state: Mapping[str, int], checkpoint_count: int) -> dict[str, Any]:
+    return validate_message({
+        "version": PROTOCOL_VERSION,
+        "type": MessageType.CHECKPOINT,
+        "source": source,
+        "destination": destination,
+        "payload": {"state": dict(state), "checkpoint_count": checkpoint_count},
     })

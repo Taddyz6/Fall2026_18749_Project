@@ -10,6 +10,7 @@ from ft_system.client.app import ClientApp, ServerEndpoint, run_automatic, run_i
 from ft_system.common.config import ConfigError, load_config
 from ft_system.common.logging import EventLogger
 from ft_system.client.active import ActiveClientApp
+from ft_system.client.passive import PassiveClientApp
 from ft_system.common.protocol import ProtocolError
 from ft_system.lfd.main import positive_float
 
@@ -34,7 +35,12 @@ async def run(args: argparse.Namespace) -> None:
             server.replica_id, server.advertised_host, server.client_port
         ))
 
-    if len(endpoints) > 1:
+    if app_config.passive is not None:
+        client = PassiveClientApp(
+            client_config.client_id, endpoints, app_config.passive.primary_id,
+            client_config.connect_timeout, client_config.read_timeout, EventLogger(),
+        )
+    elif len(endpoints) > 1:
         client = ActiveClientApp(
             client_config.client_id,
             endpoints,

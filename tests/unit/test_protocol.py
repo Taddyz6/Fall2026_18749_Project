@@ -9,6 +9,7 @@ from ft_system.common.protocol import (
     build_error,
     build_heartbeat,
     build_heartbeat_ack,
+    build_checkpoint,
     decode_message,
     encode_message,
 )
@@ -83,6 +84,15 @@ def test_heartbeat_ack_preserves_heartbeat_count():
         "destination": "LFD1",
         "heartbeat_count": 42,
         "payload": {},
+    }
+
+
+def test_checkpoint_carries_state_and_checkpoint_count():
+    checkpoint = build_checkpoint("S1", "S2", {"C1": 4, "C2": 2}, 7)
+
+    assert decode_message(encode_message(checkpoint)) == {
+        "version": 1, "type": "checkpoint", "source": "S1", "destination": "S2",
+        "payload": {"state": {"C1": 4, "C2": 2}, "checkpoint_count": 7},
     }
 
 

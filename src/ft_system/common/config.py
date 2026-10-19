@@ -22,6 +22,7 @@ class ServerConfig:
     advertised_host: str
     client_port: int
     heartbeat_port: int
+    checkpoint_port: int | None = None
 
 
 @dataclass(frozen=True)
@@ -53,11 +54,18 @@ class GfdConfig:
 
 
 @dataclass(frozen=True)
+class PassiveConfig:
+    primary_id: str
+    checkpoint_freq: float
+
+
+@dataclass(frozen=True)
 class AppConfig:
     servers: Mapping[str, ServerConfig]
     clients: Mapping[str, ClientConfig]
     lfds: Mapping[str, LfdConfig]
     gfd: GfdConfig | None = None
+    passive: PassiveConfig | None = None
 
     def server(self, replica_id: str) -> ServerConfig:
         try:
@@ -125,6 +133,11 @@ def _parse_servers(data: Mapping[str, Any]) -> dict[str, ServerConfig]:
         )
         if client_port == heartbeat_port:
             raise ConfigError("client_port and heartbeat_port must be distinct")
+        checkpoint_port = raw.get("checkpoint_port")
+        if checkpoint_port is not None:
+            checkpoint_port = _port(checkpoint_port, "checkpoint_port")
+            if checkpoint_port in {client_port, heartbeat_port}:
+                raise ConfigError("checkpoint_port must be distinct from client_port and heartbeat_port")
         servers[replica_id] = ServerConfig(
             replica_id=replica_id,
             bind_host=_non_empty_string(
@@ -136,6 +149,7 @@ def _parse_servers(data: Mapping[str, Any]) -> dict[str, ServerConfig]:
             ),
             client_port=client_port,
             heartbeat_port=heartbeat_port,
+            checkpoint_port=checkpoint_port,
         )
     return servers
 
@@ -245,8 +259,25 @@ def load_config(path: str | Path) -> AppConfig:
             heartbeat_freq=_positive_number(raw.get("heartbeat_freq", 1.0), "gfd.heartbeat_freq"),
             read_timeout=_positive_number(raw.get("read_timeout", 2.0), "gfd.read_timeout"),
         )
+    passive = None
+    if "passive" in data:
+        raw = _section(data, "passive")
+        primary_id = _non_empty_string(raw.get("primary_id"), "passive.primary_id")
+        if primary_id not in servers:
+            raise ConfigError(f"passive.primary_id references unknown server {primary_id}")
+        if len(servers) < 2:
+            raise ConfigError("passive replication requires at least one backup server")
+        if any(server.checkpoint_port is None for server in servers.values()):
+            raise ConfigError("passive replication requires checkpoint_port for every server")
+        passive = PassiveConfig(
+            primary_id=primary_id,
+            checkpoint_freq=_positive_number(
+                _required(raw, "checkpoint_freq", "passive"), "passive.checkpoint_freq"
+            ),
+        )
     return AppConfig(
         gfd=gfd,
+        passive=passive,
         servers=MappingProxyType(servers),
         clients=MappingProxyType(clients),
         lfds=MappingProxyType(lfds),

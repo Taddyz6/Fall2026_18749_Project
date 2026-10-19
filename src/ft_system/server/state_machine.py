@@ -43,3 +43,12 @@ class DeterministicStateMachine:
         self._state[client_id] += 1
         after = self.snapshot()
         return Transition(before=before, after=after, client_value=after[client_id])
+
+    def restore(self, state: dict[str, int]) -> None:
+        """Install a checkpoint after validating that it matches this replica's schema."""
+        if set(state) != set(self._state):
+            raise StateMachineError("checkpoint client ids do not match replica state")
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0
+               for value in state.values()):
+            raise StateMachineError("checkpoint state values must be non-negative integers")
+        self._state = dict(state)

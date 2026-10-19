@@ -152,3 +152,14 @@ def test_rejects_malformed_toml(tmp_path):
 
     with pytest.raises(ConfigError, match="TOML"):
         load_config(path)
+
+
+def test_loads_passive_replication_settings(tmp_path):
+    path = write_config(tmp_path)
+    text = path.read_text(encoding="utf-8").replace("heartbeat_port = 6001", "heartbeat_port = 6001\ncheckpoint_port = 8001")
+    text = text.replace("[client.C1]", "[passive]\nprimary_id = \"S1\"\ncheckpoint_freq = 0.5\n\n[client.C1]")
+    path.write_text(text, encoding="utf-8")
+
+    # Passive replication needs a distinct backup and a checkpoint listener on each replica.
+    with pytest.raises(ConfigError, match="at least one backup"):
+        load_config(path)
