@@ -1,9 +1,10 @@
 [gfd]
 bind_host = "0.0.0.0"
-advertised_host = "172.25.2.219"
+advertised_host = "172.26.36.169"
 port = 7100
 heartbeat_freq = 1.0
 read_timeout = 2.0
+
 
 [passive]
 primary_id = "S1"
