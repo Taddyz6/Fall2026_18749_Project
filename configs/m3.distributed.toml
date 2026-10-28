@@ -19,7 +19,7 @@ checkpoint_port = 8101
 [server.S2]
 bind_host = "0.0.0.0"
 advertised_host = "172.26.75.34"
-client_port = 5109
+client_port = 5102
 heartbeat_port = 6102
 checkpoint_port = 8102
 
