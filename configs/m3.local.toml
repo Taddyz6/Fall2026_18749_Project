@@ -1,6 +1,6 @@
 [gfd]
-bind_host = "127.0.0.1"
-advertised_host = "127.0.0.1"
+bind_host = "0.0.0.0"
+advertised_host = "172.26.36.169"
 port = 7100
 heartbeat_freq = 1.0
 read_timeout = 2.0
@@ -10,22 +10,22 @@ primary_id = "S1"
 checkpoint_freq = 0.5
 
 [server.S1]
-bind_host = "127.0.0.1"
-advertised_host = "127.0.0.1"
+bind_host = "0.0.0.0"
+advertised_host = "172.26.97.249"
 client_port = 5101
 heartbeat_port = 6101
 checkpoint_port = 8101
 
 [server.S2]
-bind_host = "127.0.0.1"
-advertised_host = "127.0.0.1"
+bind_host = "0.0.0.0"
+advertised_host = "172.26.75.34"
 client_port = 5102
 heartbeat_port = 6102
 checkpoint_port = 8102
 
 [server.S3]
-bind_host = "127.0.0.1"
-advertised_host = "127.0.0.1"
+bind_host = "0.0.0.0"
+advertised_host = "172.26.110.38"
 client_port = 5103
 heartbeat_port = 6103
 checkpoint_port = 8103
