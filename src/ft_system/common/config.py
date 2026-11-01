@@ -54,9 +54,21 @@ class GfdConfig:
 
 
 @dataclass(frozen=True)
-class PassiveConfig:
-    primary_id: str
-    checkpoint_freq: float
+class RmConfig:
+    bind_host: str
+    advertised_host: str
+    port: int
+    connect_timeout: float = 1.0
+    transfer_delay: float = 0.0
+    transfer_retry: float = 2.0
+
+
+@dataclass(frozen=True)
+class ReplicationConfig:
+    mode: str
+    checkpoint_freq: float = 1.0
+    # Only used without an RM; with an RM the primary is elected at runtime.
+    primary_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -65,7 +77,8 @@ class AppConfig:
     clients: Mapping[str, ClientConfig]
     lfds: Mapping[str, LfdConfig]
     gfd: GfdConfig | None = None
-    passive: PassiveConfig | None = None
+    replication: ReplicationConfig | None = None
+    rm: RmConfig | None = None
 
     def server(self, replica_id: str) -> ServerConfig:
         try:
@@ -108,6 +121,12 @@ def _port(value: Any, field: str) -> int:
 def _positive_number(value: Any, field: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
         raise ConfigError(f"{field} must be positive")
+    return float(value)
+
+
+def _non_negative_number(value: Any, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        raise ConfigError(f"{field} must not be negative")
     return float(value)
 
 
@@ -259,26 +278,65 @@ def load_config(path: str | Path) -> AppConfig:
             heartbeat_freq=_positive_number(raw.get("heartbeat_freq", 1.0), "gfd.heartbeat_freq"),
             read_timeout=_positive_number(raw.get("read_timeout", 2.0), "gfd.read_timeout"),
         )
-    passive = None
-    if "passive" in data:
-        raw = _section(data, "passive")
-        primary_id = _non_empty_string(raw.get("primary_id"), "passive.primary_id")
-        if primary_id not in servers:
-            raise ConfigError(f"passive.primary_id references unknown server {primary_id}")
-        if len(servers) < 2:
-            raise ConfigError("passive replication requires at least one backup server")
-        if any(server.checkpoint_port is None for server in servers.values()):
-            raise ConfigError("passive replication requires checkpoint_port for every server")
-        passive = PassiveConfig(
-            primary_id=primary_id,
-            checkpoint_freq=_positive_number(
-                _required(raw, "checkpoint_freq", "passive"), "passive.checkpoint_freq"
-            ),
+    rm = None
+    if "rm" in data:
+        raw = _section(data, "rm")
+        rm = RmConfig(
+            bind_host=_non_empty_string(raw.get("bind_host"), "rm.bind_host"),
+            advertised_host=_non_empty_string(raw.get("advertised_host"), "rm.advertised_host"),
+            port=_port(raw.get("port"), "rm.port"),
+            connect_timeout=_positive_number(raw.get("connect_timeout", 1.0), "rm.connect_timeout"),
+            transfer_delay=_non_negative_number(raw.get("transfer_delay", 0.0), "rm.transfer_delay"),
+            transfer_retry=_positive_number(raw.get("transfer_retry", 2.0), "rm.transfer_retry"),
         )
+    replication = _parse_replication(data, servers, rm)
+    if rm is not None and replication is None:
+        raise ConfigError("an [rm] section requires a [replication] section")
     return AppConfig(
         gfd=gfd,
-        passive=passive,
+        replication=replication,
+        rm=rm,
         servers=MappingProxyType(servers),
         clients=MappingProxyType(clients),
         lfds=MappingProxyType(lfds),
+    )
+
+
+def _parse_replication(
+    data: Mapping[str, Any], servers: Mapping[str, ServerConfig], rm: RmConfig | None
+) -> ReplicationConfig | None:
+    if "passive" in data and "replication" in data:
+        raise ConfigError("use either [replication] or the Milestone 3 [passive] section, not both")
+    if "passive" in data:
+        # Milestone 3 layout: passive replication with a fixed primary.
+        raw = _section(data, "passive")
+        name, mode = "passive", "passive"
+        primary_id = _non_empty_string(raw.get("primary_id"), "passive.primary_id")
+    elif "replication" in data:
+        raw = _section(data, "replication")
+        name, mode = "replication", raw.get("mode")
+        if mode not in {"active", "passive"}:
+            raise ConfigError("replication.mode must be active or passive")
+        primary_id = raw.get("primary_id")
+        if primary_id is not None:
+            primary_id = _non_empty_string(primary_id, "replication.primary_id")
+    else:
+        return None
+
+    if primary_id is not None and primary_id not in servers:
+        raise ConfigError(f"{name}.primary_id references unknown server {primary_id}")
+    if any(server.checkpoint_port is None for server in servers.values()):
+        raise ConfigError(f"{mode} replication requires checkpoint_port for every server")
+    if mode == "passive":
+        if len(servers) < 2:
+            raise ConfigError("passive replication requires at least one backup server")
+        if rm is None and primary_id is None:
+            raise ConfigError("passive replication without an [rm] section requires primary_id")
+        checkpoint_freq = _required(raw, "checkpoint_freq", name)
+    else:
+        checkpoint_freq = raw.get("checkpoint_freq", 1.0)
+    return ReplicationConfig(
+        mode=mode,
+        checkpoint_freq=_positive_number(checkpoint_freq, f"{name}.checkpoint_freq"),
+        primary_id=primary_id,
     )

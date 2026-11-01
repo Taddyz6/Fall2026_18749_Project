@@ -2,16 +2,20 @@
 
 import asyncio
 
-from ft_system.common.config import GfdConfig
-from ft_system.common.logging import EventLogger
-from ft_system.common.protocol import MessageType, ProtocolError, build_heartbeat
+from ft_system.common.config import GfdConfig, RmConfig
+from ft_system.common.logging import EventLogger, format_members
+from ft_system.common.protocol import (
+    MessageType, ProtocolError, build_heartbeat, build_membership_report,
+)
+from ft_system.common.rm_link import RmLink
 from ft_system.common.transport import (
     MAX_MESSAGE_BYTES, close_writer, read_message_with_timeout, write_message,
 )
 
 
 class GfdApp:
-    def __init__(self, config: GfdConfig, lfd_servers: dict[str, str], logger: EventLogger):
+    def __init__(self, config: GfdConfig, lfd_servers: dict[str, str], logger: EventLogger,
+                 rm: RmConfig | None = None):
         self.config = config
         self.lfd_servers = lfd_servers
         self.logger = logger
@@ -20,6 +24,10 @@ class GfdApp:
         self._writers: set[asyncio.StreamWriter] = set()
         self._tasks: set[asyncio.Task] = set()
         self._server = None
+        self._rm = RmLink("GFD", "gfd", rm, logger, self._unexpected_rm_message,
+                          self._notify_rm) if rm is not None else None
+        self._rm_changed = asyncio.Event()
+        self._rm_tasks: list[asyncio.Task] = []
 
     @property
     def membership(self) -> list[str]:
@@ -44,6 +52,22 @@ class GfdApp:
         else:
             self._members.discard(replica)
         self.logger.membership(self.membership)
+        self._rm_changed.set()
+
+    async def _notify_rm(self) -> None:
+        self._rm_changed.clear()
+        members = self.membership
+        if await self._rm.send(build_membership_report(members)):
+            self.logger.event(f"GFD: notified RM: {format_members(members)}")
+
+    async def _report_to_rm(self) -> None:
+        # Every report is a full snapshot, so coalescing rapid changes is safe.
+        while True:
+            await self._rm_changed.wait()
+            await self._notify_rm()
+
+    async def _unexpected_rm_message(self, message: dict) -> None:
+        raise ProtocolError(f"unexpected {message['type']} from RM")
 
     def _validate_report(self, message: dict, lfd_id: str) -> None:
         if (message["source"] != lfd_id or message["destination"] != "GFD"
@@ -119,13 +143,17 @@ class GfdApp:
         self._server = await asyncio.start_server(self._handle, self.config.bind_host,
                                                  self.config.port, limit=MAX_MESSAGE_BYTES + 1)
         self.logger.membership(self.membership)
+        if self._rm is not None:
+            self._rm_tasks = [asyncio.create_task(self._rm.run()),
+                              asyncio.create_task(self._report_to_rm())]
 
     async def close(self) -> None:
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
             self._server = None
-        tasks = list(self._tasks)
+        tasks = list(self._tasks) + self._rm_tasks
+        self._rm_tasks = []
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

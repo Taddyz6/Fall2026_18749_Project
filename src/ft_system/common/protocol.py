@@ -24,6 +24,17 @@ class MessageType(StrEnum):
     REGISTER = "register"
     MEMBERSHIP = "membership"
     CHECKPOINT = "checkpoint"
+    HELLO = "hello"
+    MEMBERSHIP_REPORT = "membership_report"
+    VIEW = "view"
+    RM_COMMAND = "rm_command"
+    REPLICA_STATUS = "replica_status"
+
+
+RM_ID = "RM"
+RM_PEER_KINDS = frozenset({"gfd", "server", "client"})
+REPLICATION_MODES = frozenset({"active", "passive"})
+RM_COMMANDS = frozenset({"set_ready", "transfer_state"})
 
 
 def _require_mapping(value: Any, field: str) -> dict[str, Any]:
@@ -48,6 +59,39 @@ def _require_non_negative_int(value: Any, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ProtocolError(f"{field} must be a non-negative integer")
     return value
+
+
+def _require_id_list(value: Any, field: str) -> list[str]:
+    if not isinstance(value, list):
+        raise ProtocolError(f"{field} must be a list")
+    ids = [_require_string(item, field) for item in value]
+    if len(ids) != len(set(ids)):
+        raise ProtocolError(f"{field} must not repeat an id")
+    return ids
+
+
+def _require_rm_destination(message: dict[str, Any]) -> None:
+    if message["destination"] != RM_ID:
+        raise ProtocolError(f"{message['type']} messages must be addressed to RM")
+
+
+def _require_rm_source(message: dict[str, Any]) -> None:
+    if message["source"] != RM_ID:
+        raise ProtocolError(f"{message['type']} messages must come from RM")
+
+
+def _validate_view(payload: dict[str, Any]) -> None:
+    payload["view_num"] = _require_non_negative_int(payload.get("view_num"), "view_num")
+    if payload.get("mode") not in REPLICATION_MODES:
+        raise ProtocolError("mode must be active or passive")
+    members = _require_id_list(payload.get("members"), "members")
+    ready = _require_id_list(payload.get("ready"), "ready")
+    if not set(ready) <= set(members):
+        raise ProtocolError("ready replicas must be members")
+    primary = payload.get("primary")
+    if primary is not None and (payload["mode"] != "passive" or primary not in members):
+        raise ProtocolError("primary must be a member of a passive view")
+    payload["members"], payload["ready"], payload["primary"] = members, ready, primary
 
 
 def _validate_request_identity(message: dict[str, Any]) -> None:
@@ -112,7 +156,7 @@ def validate_message(message: Mapping[str, Any]) -> dict[str, Any]:
     elif message_type is MessageType.CHECKPOINT:
         if any(field in validated for field in ("client_id", "replica_id", "request_num", "request_id")):
             raise ProtocolError("checkpoint message type cannot carry client request fields")
-        payload["checkpoint_count"] = _require_non_negative_int(
+        payload["checkpoint_count"] = _require_positive_int(
             payload.get("checkpoint_count"), "checkpoint_count"
         )
         state = _require_mapping(payload.get("state"), "state")
@@ -120,6 +164,37 @@ def validate_message(message: Mapping[str, Any]) -> dict[str, Any]:
             _require_string(client_id, "state client id")
             _require_non_negative_int(value, "state value")
         payload["state"] = state
+        # The last applied request per client lets a new replica rebuild duplicate
+        # detection and decide which of its logged requests the checkpoint covers.
+        last = _require_mapping(payload.get("last_request_nums"), "last_request_nums")
+        if set(last) != set(state):
+            raise ProtocolError("last_request_nums must name exactly the state's clients")
+        for value in last.values():
+            _require_non_negative_int(value, "last_request_nums value")
+        payload["last_request_nums"] = last
+    elif message_type is MessageType.HELLO:
+        _require_rm_destination(validated)
+        if payload.get("kind") not in RM_PEER_KINDS:
+            raise ProtocolError("hello kind must be gfd, server, or client")
+    elif message_type is MessageType.MEMBERSHIP_REPORT:
+        _require_rm_destination(validated)
+        payload["members"] = _require_id_list(payload.get("members"), "members")
+    elif message_type is MessageType.VIEW:
+        _require_rm_source(validated)
+        _validate_view(payload)
+    elif message_type is MessageType.RM_COMMAND:
+        _require_rm_source(validated)
+        if payload.get("command") not in RM_COMMANDS:
+            raise ProtocolError("command must be set_ready or transfer_state")
+        if payload["command"] == "transfer_state":
+            payload["target"] = _require_string(payload.get("target"), "target")
+    elif message_type is MessageType.REPLICA_STATUS:
+        _require_rm_destination(validated)
+        if not isinstance(payload.get("ready"), bool):
+            raise ProtocolError("ready must be a boolean")
+        payload["checkpoint_count"] = _require_non_negative_int(
+            payload.get("checkpoint_count"), "checkpoint_count"
+        )
     else:
         payload["code"] = _require_string(payload.get("code"), "code")
         payload["detail"] = _require_string(payload.get("detail"), "detail")
@@ -243,11 +318,52 @@ def build_membership(lfd_id: str, replica_id: str, healthy: bool, *, register: b
     })
 
 
-def build_checkpoint(source: str, destination: str, state: Mapping[str, int], checkpoint_count: int) -> dict[str, Any]:
+def build_checkpoint(source: str, destination: str, state: Mapping[str, int],
+                     last_request_nums: Mapping[str, int], checkpoint_count: int) -> dict[str, Any]:
     return validate_message({
         "version": PROTOCOL_VERSION,
         "type": MessageType.CHECKPOINT,
         "source": source,
         "destination": destination,
-        "payload": {"state": dict(state), "checkpoint_count": checkpoint_count},
+        "payload": {"state": dict(state), "last_request_nums": dict(last_request_nums),
+                    "checkpoint_count": checkpoint_count},
+    })
+
+
+def build_hello(source: str, kind: str) -> dict[str, Any]:
+    return validate_message({
+        "version": PROTOCOL_VERSION, "type": MessageType.HELLO,
+        "source": source, "destination": RM_ID, "payload": {"kind": kind},
+    })
+
+
+def build_membership_report(members: list[str]) -> dict[str, Any]:
+    return validate_message({
+        "version": PROTOCOL_VERSION, "type": MessageType.MEMBERSHIP_REPORT,
+        "source": "GFD", "destination": RM_ID, "payload": {"members": list(members)},
+    })
+
+
+def build_view(destination: str, view: Mapping[str, Any]) -> dict[str, Any]:
+    return validate_message({
+        "version": PROTOCOL_VERSION, "type": MessageType.VIEW,
+        "source": RM_ID, "destination": destination, "payload": dict(view),
+    })
+
+
+def build_rm_command(destination: str, command: str, target: str | None = None) -> dict[str, Any]:
+    payload = {"command": command}
+    if target is not None:
+        payload["target"] = target
+    return validate_message({
+        "version": PROTOCOL_VERSION, "type": MessageType.RM_COMMAND,
+        "source": RM_ID, "destination": destination, "payload": payload,
+    })
+
+
+def build_replica_status(replica_id: str, ready: bool, checkpoint_count: int) -> dict[str, Any]:
+    return validate_message({
+        "version": PROTOCOL_VERSION, "type": MessageType.REPLICA_STATUS,
+        "source": replica_id, "destination": RM_ID,
+        "payload": {"ready": ready, "checkpoint_count": checkpoint_count},
     })

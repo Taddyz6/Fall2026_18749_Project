@@ -1,0 +1,82 @@
+# Milestone 4, passive replication, all processes on one computer.
+# m4.active.local.toml is identical except for [replication].
+
+[rm]
+bind_host = "127.0.0.1"
+advertised_host = "127.0.0.1"
+port = 7300
+# Seconds the RM waits before asking a ready replica to send its state to a
+# (re)launched one. Keeps "i_am_ready = 0; logged ..." visible during the demo.
+transfer_delay = 2.0
+
+[replication]
+mode = "passive"
+# How often the primary checkpoints to its backups; ft-server --checkpoint-freq overrides.
+checkpoint_freq = 1.0
+
+[gfd]
+bind_host = "127.0.0.1"
+advertised_host = "127.0.0.1"
+port = 7200
+heartbeat_freq = 1.0
+read_timeout = 2.0
+
+[server.S1]
+bind_host = "127.0.0.1"
+advertised_host = "127.0.0.1"
+client_port = 5201
+heartbeat_port = 6201
+checkpoint_port = 8201
+
+[server.S2]
+bind_host = "127.0.0.1"
+advertised_host = "127.0.0.1"
+client_port = 5202
+heartbeat_port = 6202
+checkpoint_port = 8202
+
+[server.S3]
+bind_host = "127.0.0.1"
+advertised_host = "127.0.0.1"
+client_port = 5203
+heartbeat_port = 6203
+checkpoint_port = 8203
+
+[client.C1]
+server_ids = ["S1", "S2", "S3"]
+connect_timeout = 1.0
+read_timeout = 2.0
+
+[client.C2]
+server_ids = ["S1", "S2", "S3"]
+connect_timeout = 1.0
+read_timeout = 2.0
+
+[client.C3]
+server_ids = ["S1", "S2", "S3"]
+connect_timeout = 1.0
+read_timeout = 2.0
+
+[lfd.LFD1]
+server_id = "S1"
+heartbeat_freq = 1.0
+connect_timeout = 1.0
+read_timeout = 1.0
+initial_backoff = 0.2
+max_backoff = 1.0
+
+[lfd.LFD2]
+server_id = "S2"
+heartbeat_freq = 1.0
+connect_timeout = 1.0
+read_timeout = 1.0
+initial_backoff = 0.2
+max_backoff = 1.0
+
+[lfd.LFD3]
+server_id = "S3"
+heartbeat_freq = 1.0
+connect_timeout = 1.0
+read_timeout = 1.0
+initial_backoff = 0.2
+max_backoff = 1.0

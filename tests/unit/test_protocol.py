@@ -10,6 +10,11 @@ from ft_system.common.protocol import (
     build_heartbeat,
     build_heartbeat_ack,
     build_checkpoint,
+    build_hello,
+    build_membership_report,
+    build_replica_status,
+    build_rm_command,
+    build_view,
     decode_message,
     encode_message,
 )
@@ -88,12 +93,61 @@ def test_heartbeat_ack_preserves_heartbeat_count():
 
 
 def test_checkpoint_carries_state_and_checkpoint_count():
-    checkpoint = build_checkpoint("S1", "S2", {"C1": 4, "C2": 2}, 7)
+    checkpoint = build_checkpoint("S1", "S2", {"C1": 4, "C2": 2}, {"C1": 4, "C2": 2}, 7)
 
     assert decode_message(encode_message(checkpoint)) == {
         "version": 1, "type": "checkpoint", "source": "S1", "destination": "S2",
-        "payload": {"state": {"C1": 4, "C2": 2}, "checkpoint_count": 7},
+        "payload": {"state": {"C1": 4, "C2": 2}, "last_request_nums": {"C1": 4, "C2": 2},
+                    "checkpoint_count": 7},
     }
+
+
+def test_checkpoint_requires_request_numbers_for_exactly_the_state_clients():
+    with pytest.raises(ProtocolError, match="last_request_nums"):
+        build_checkpoint("S1", "S2", {"C1": 4, "C2": 2}, {"C1": 4}, 1)
+
+
+def test_checkpoint_count_starts_at_one():
+    with pytest.raises(ProtocolError, match="checkpoint_count"):
+        build_checkpoint("S1", "S2", {"C1": 0}, {"C1": 0}, 0)
+
+
+def test_rm_messages_round_trip():
+    view = {"view_num": 3, "mode": "passive", "members": ["S1", "S2"], "ready": ["S1"], "primary": "S1"}
+    messages = [
+        build_hello("S1", "server"),
+        build_membership_report(["S1", "S2"]),
+        build_view("C1", view),
+        build_rm_command("S1", "transfer_state", "S2"),
+        build_rm_command("S2", "set_ready"),
+        build_replica_status("S2", True, 4),
+    ]
+
+    for message in messages:
+        assert decode_message(encode_message(message)) == message
+    assert messages[2]["payload"] == view
+
+
+@pytest.mark.parametrize("change", [
+    {"ready": ["S3"]},
+    {"primary": "S3"},
+    {"mode": "active"},
+    {"members": ["S1", "S1"]},
+])
+def test_view_rejects_inconsistent_membership(change):
+    view = {"view_num": 1, "mode": "passive", "members": ["S1", "S2"], "ready": ["S1"], "primary": "S1"}
+
+    with pytest.raises(ProtocolError):
+        build_view("C1", view | change)
+
+
+def test_rm_messages_check_direction():
+    with pytest.raises(ProtocolError, match="addressed to RM"):
+        encode_message(build_hello("S1", "server") | {"destination": "GFD"})
+    with pytest.raises(ProtocolError, match="come from RM"):
+        encode_message(build_rm_command("S1", "set_ready") | {"source": "S2"})
+    with pytest.raises(ProtocolError, match="target"):
+        build_rm_command("S1", "transfer_state")
 
 
 def test_error_can_refer_to_a_logical_request():

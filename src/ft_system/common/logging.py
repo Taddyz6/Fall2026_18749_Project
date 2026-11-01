@@ -17,6 +17,9 @@ _COLORS = {
     "failed": "\033[31m",
     "recovered": "\033[32m",
     "error": "\033[31m",
+    "ready": "\033[1;32m",
+    "not_ready": "\033[1;31m",
+    "view": "\033[90m",
 }
 _RESET = "\033[0m"
 
@@ -121,21 +124,37 @@ class EventLogger:
     def error(self, component_id: str, detail: str) -> None:
         self._write(f"{component_id} ERROR: {detail}", "error")
 
-    def event(self, text: str) -> None:
-        self._write(text)
+    def event(self, text: str, color: str | None = None) -> None:
+        self._write(text, color)
 
     def duplicate(self, request_num: int, replica_id: str) -> None:
         self._write(f"request_num {request_num}: Discarded duplicate reply from {replica_id}", "received")
 
-    def membership(self, members: list[str]) -> None:
-        count = len(members)
-        suffix = ": " + ", ".join(members) if members else ""
-        self._write(f"GFD: {count} {'member' if count == 1 else 'members'}{suffix}", "recovered")
+    def membership(self, members: list[str], owner: str = "GFD") -> None:
+        self._write(f"{owner}: {format_members(members)}", "recovered")
 
     def checkpoint_sent(self, source: str, destination: str, state: Mapping[str, int], count: int) -> None:
-        self._write(f"{source} sending checkpoint #{count} to {destination}: my_state = "
-                    f"{json.dumps(dict(state), sort_keys=True)}", "sending")
+        self._write(f"{source} sending checkpoint <my_state = {json.dumps(dict(state), sort_keys=True)}, "
+                    f"checkpoint_count = {count}> to {destination}", "sending")
 
     def checkpoint_received(self, destination: str, source: str, state: Mapping[str, int], count: int) -> None:
-        self._write(f"{destination} received checkpoint #{count} from {source}: my_state = "
-                    f"{json.dumps(dict(state), sort_keys=True)}", "received")
+        self._write(f"{destination} received checkpoint <my_state = {json.dumps(dict(state), sort_keys=True)}, "
+                    f"checkpoint_count = {count}> from {source}", "received")
+
+    def readiness(self, replica_id: str, ready: bool, reason: str) -> None:
+        self._write(f"{replica_id}: i_am_ready = {int(ready)} ({reason})", "ready" if ready else "not_ready")
+
+    def logged_unready(self, replica_id: str, request: Mapping[str, Any], watermark: int) -> None:
+        self._write(f"{replica_id}: i_am_ready = 0; logged {_message_tuple(request, 'request')} without "
+                    f"replying (high_watermark_request_num[{request['client_id']}] = {watermark})", "not_ready")
+
+    def view(self, owner: str, view: Mapping[str, Any]) -> None:
+        primary = f"; primary: {view['primary'] or '-'}" if view["mode"] == "passive" else ""
+        self._write(f"{owner}: view {view['view_num']}: members: {', '.join(view['members']) or '-'}; "
+                    f"ready: {', '.join(view['ready']) or '-'}{primary}", "view")
+
+
+def format_members(members: list[str]) -> str:
+    count = len(members)
+    suffix = ": " + ", ".join(members) if members else ""
+    return f"{count} {'member' if count == 1 else 'members'}{suffix}"

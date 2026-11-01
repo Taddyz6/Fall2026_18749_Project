@@ -1,0 +1,80 @@
+# Milestone 4, active replication, four computers (A: RM, GFD, C1-C3; B/C/D: S1-S3 with LFD1-LFD3).
+# Replace the advertised_host addresses with the current Wi-Fi IPv4 address of each computer.
+
+[rm]
+bind_host = "0.0.0.0"
+advertised_host = "172.26.36.169"
+port = 7300
+# Seconds the RM waits before asking a ready replica to send its state to a
+# (re)launched one. Keeps "i_am_ready = 0; logged ..." visible during the demo.
+transfer_delay = 2.0
+
+[replication]
+mode = "active"
+
+[gfd]
+bind_host = "0.0.0.0"
+advertised_host = "172.26.36.169"
+port = 7200
+heartbeat_freq = 1.0
+read_timeout = 2.0
+
+[server.S1]
+bind_host = "0.0.0.0"
+advertised_host = "172.26.97.249"
+client_port = 5201
+heartbeat_port = 6201
+checkpoint_port = 8201
+
+[server.S2]
+bind_host = "0.0.0.0"
+advertised_host = "172.26.75.34"
+client_port = 5202
+heartbeat_port = 6202
+checkpoint_port = 8202
+
+[server.S3]
+bind_host = "0.0.0.0"
+advertised_host = "172.26.110.38"
+client_port = 5203
+heartbeat_port = 6203
+checkpoint_port = 8203
+
+[client.C1]
+server_ids = ["S1", "S2", "S3"]
+connect_timeout = 1.0
+read_timeout = 2.0
+
+[client.C2]
+server_ids = ["S1", "S2", "S3"]
+connect_timeout = 1.0
+read_timeout = 2.0
+
+[client.C3]
+server_ids = ["S1", "S2", "S3"]
+connect_timeout = 1.0
+read_timeout = 2.0
+
+[lfd.LFD1]
+server_id = "S1"
+heartbeat_freq = 1.0
+connect_timeout = 1.0
+read_timeout = 1.0
+initial_backoff = 0.2
+max_backoff = 1.0
+
+[lfd.LFD2]
+server_id = "S2"
+heartbeat_freq = 1.0
+connect_timeout = 1.0
+read_timeout = 1.0
+initial_backoff = 0.2
+max_backoff = 1.0
+
+[lfd.LFD3]
+server_id = "S3"
+heartbeat_freq = 1.0
+connect_timeout = 1.0
+read_timeout = 1.0
+initial_backoff = 0.2
+max_backoff = 1.0

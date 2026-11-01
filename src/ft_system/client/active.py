@@ -39,32 +39,53 @@ class ActiveClientApp:
         self._all_connections = []
         self._delivered_values = {}
         self._closing = False
+        self._opening = set()
+        self._ever_connected = set()
 
     @property
     def next_request_num(self):
         return self._next_request_num
 
+    async def _open_replica(self, endpoint):
+        replica = endpoint.replica_id
+        if replica in self._connections or replica in self._opening or self._closing:
+            return
+        self._opening.add(replica)
+        try:
+            reader, writer = await open_connection_with_timeout(
+                endpoint.host, endpoint.port, self.connect_timeout)
+        except (TimeoutError, ConnectionError, OSError) as exc:
+            self.logger.error(self.client_id, f"{replica} unavailable: {exc}")
+            return
+        finally:
+            self._opening.discard(replica)
+        if self._closing:
+            await close_writer(writer)
+            return
+        if replica in self._ever_connected:
+            self.logger.event(f"{self.client_id}: reconnected to {replica}", "recovered")
+        self._ever_connected.add(replica)
+        connection = ReplicaConnection(endpoint, reader, writer)
+        self._connections[replica] = connection
+        self._all_connections.append(connection)
+        connection.task = asyncio.create_task(self._receive(connection))
+        self._tasks.add(connection.task)
+        connection.task.add_done_callback(self._tasks.discard)
+        connection.task.add_done_callback(lambda _: self._prune_delivered_values())
+
     async def connect(self):
         if self._started:
             return
         self._started = True
+        await asyncio.gather(*(self._open_replica(endpoint) for endpoint in self.endpoints))
 
-        async def open_replica(endpoint):
-            try:
-                reader, writer = await open_connection_with_timeout(
-                    endpoint.host, endpoint.port, self.connect_timeout)
-            except (TimeoutError, ConnectionError, OSError) as exc:
-                self.logger.error(self.client_id, f"{endpoint.replica_id} unavailable: {exc}")
-                return
-            connection = ReplicaConnection(endpoint, reader, writer)
-            self._connections[endpoint.replica_id] = connection
-            self._all_connections.append(connection)
-            connection.task = asyncio.create_task(self._receive(connection))
-            self._tasks.add(connection.task)
-            connection.task.add_done_callback(self._tasks.discard)
-            connection.task.add_done_callback(lambda _: self._prune_delivered_values())
-
-        await asyncio.gather(*(open_replica(endpoint) for endpoint in self.endpoints))
+    def apply_view(self, view):
+        """Open connections to members of the RM's view that this client lacks."""
+        for endpoint in self.endpoints:
+            if endpoint.replica_id in view["members"] and endpoint.replica_id not in self._connections:
+                task = asyncio.create_task(self._open_replica(endpoint))
+                self._tasks.add(task)
+                task.add_done_callback(self._tasks.discard)
 
     async def _retire(self, connection, reason):
         replica = connection.endpoint.replica_id
@@ -122,7 +143,7 @@ class ActiveClientApp:
                 self._next_request_num += 1
                 return self._last_reply
             if not self._connections:
-                raise ConnectionError("no replicas remain; restart the complete demo to reset state")
+                raise ConnectionError("no replicas connected")
             number = self._next_request_num
             self._pending = asyncio.get_running_loop().create_future()
 

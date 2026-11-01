@@ -6,9 +6,11 @@ import argparse
 import asyncio
 import signal
 from collections.abc import Sequence
+from dataclasses import replace
 
 from ft_system.common.config import ConfigError, load_config
 from ft_system.common.logging import EventLogger
+from ft_system.lfd.main import positive_float
 from ft_system.server.app import ServerApp
 
 
@@ -16,14 +18,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run one server replica")
     parser.add_argument("--config", required=True, help="Path to shared TOML config")
     parser.add_argument("--server-id", required=True, help="Replica ID, for example S1")
+    parser.add_argument("--checkpoint-freq", type=positive_float,
+                        help="Override the primary's checkpoint period in seconds")
     return parser
 
 
 async def run(args: argparse.Namespace) -> None:
     app_config = load_config(args.config)
     server_config = app_config.server(args.server_id)
+    replication = app_config.replication
+    if args.checkpoint_freq is not None:
+        if replication is None:
+            raise ConfigError("--checkpoint-freq requires a replication configuration")
+        replication = replace(replication, checkpoint_freq=args.checkpoint_freq)
     app = ServerApp(server_config, tuple(app_config.clients), EventLogger(),
-                    app_config.passive, tuple(app_config.servers.values()))
+                    replication, tuple(app_config.servers.values()), app_config.rm)
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):

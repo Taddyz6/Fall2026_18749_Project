@@ -11,6 +11,7 @@ from ft_system.common.config import ConfigError, load_config
 from ft_system.common.logging import EventLogger
 from ft_system.client.active import ActiveClientApp
 from ft_system.client.passive import PassiveClientApp
+from ft_system.client.rm_subscriber import subscribe
 from ft_system.common.protocol import ProtocolError
 from ft_system.lfd.main import positive_float
 
@@ -35,9 +36,12 @@ async def run(args: argparse.Namespace) -> None:
             server.replica_id, server.advertised_host, server.client_port
         ))
 
-    if app_config.passive is not None:
+    replication = app_config.replication
+    if replication is not None and replication.mode == "passive":
+        # With an RM the primary comes from its views; otherwise from the config.
+        primary_id = None if app_config.rm is not None else replication.primary_id
         client = PassiveClientApp(
-            client_config.client_id, endpoints, app_config.passive.primary_id,
+            client_config.client_id, endpoints, primary_id,
             client_config.connect_timeout, client_config.read_timeout, EventLogger(),
         )
     elif len(endpoints) > 1:
@@ -58,6 +62,9 @@ async def run(args: argparse.Namespace) -> None:
         )
     if args.count < 0:
         raise ConfigError("count must be non-negative")
+    rm_task = None
+    if app_config.rm is not None and hasattr(client, "apply_view"):
+        rm_task = asyncio.create_task(subscribe(client, app_config.rm, client.logger).run())
     try:
         if args.interactive:
             await run_interactive(client)
@@ -74,6 +81,9 @@ async def run(args: argparse.Namespace) -> None:
                 if completed < args.count:
                     await asyncio.sleep(args.interval)
     finally:
+        if rm_task is not None:
+            rm_task.cancel()
+            await asyncio.gather(rm_task, return_exceptions=True)
         await client.close()
 
 

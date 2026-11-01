@@ -154,6 +154,59 @@ def test_rejects_malformed_toml(tmp_path):
         load_config(path)
 
 
+def two_server_config(tmp_path, extra):
+    path = write_config(tmp_path)
+    text = path.read_text(encoding="utf-8").replace("heartbeat_port = 6001", "heartbeat_port = 6001\ncheckpoint_port = 8001")
+    text = text.replace("[client.C1]", """[server.S2]
+bind_host = "127.0.0.1"
+advertised_host = "127.0.0.1"
+client_port = 5002
+heartbeat_port = 6002
+checkpoint_port = 8002
+
+""" + extra + "\n[client.C1]")
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_loads_rm_and_replication_sections(tmp_path):
+    path = two_server_config(tmp_path, """
+[rm]
+bind_host = "0.0.0.0"
+advertised_host = "10.0.0.1"
+port = 7300
+transfer_delay = 0
+
+[replication]
+mode = "passive"
+checkpoint_freq = 0.5
+""")
+
+    config = load_config(path)
+
+    assert config.rm.port == 7300 and config.rm.transfer_delay == 0
+    assert (config.replication.mode, config.replication.checkpoint_freq) == ("passive", 0.5)
+    assert config.replication.primary_id is None
+
+
+def test_milestone3_passive_section_maps_to_fixed_primary(tmp_path):
+    config = load_config(two_server_config(tmp_path, '[passive]\nprimary_id = "S2"\ncheckpoint_freq = 0.5\n'))
+
+    assert (config.replication.mode, config.replication.primary_id) == ("passive", "S2")
+    assert config.rm is None
+
+
+@pytest.mark.parametrize(("extra", "message"), [
+    ('[replication]\nmode = "hot"\n', "mode"),
+    ('[replication]\nmode = "passive"\ncheckpoint_freq = 1.0\n', "primary_id"),
+    ('[rm]\nbind_host = "a"\nadvertised_host = "a"\nport = 7300\n', r"\[replication\]"),
+    ('[replication]\nmode = "active"\n[passive]\nprimary_id = "S1"\ncheckpoint_freq = 1.0\n', "not both"),
+])
+def test_rejects_invalid_replication_settings(tmp_path, extra, message):
+    with pytest.raises(ConfigError, match=message):
+        load_config(two_server_config(tmp_path, extra))
+
+
 def test_loads_passive_replication_settings(tmp_path):
     path = write_config(tmp_path)
     text = path.read_text(encoding="utf-8").replace("heartbeat_port = 6001", "heartbeat_port = 6001\ncheckpoint_port = 8001")

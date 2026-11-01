@@ -6,7 +6,7 @@ import pytest
 
 from ft_system.client.app import ServerEndpoint
 from ft_system.client.passive import PassiveClientApp
-from ft_system.common.config import PassiveConfig, ServerConfig
+from ft_system.common.config import ReplicationConfig, ServerConfig
 from ft_system.common.logging import EventLogger
 from ft_system.server.app import ServerApp
 from tests.helpers import eventually
@@ -18,7 +18,8 @@ def logger(stream):
 
 async def start_passive_cluster():
     base = [ServerConfig(f"S{i}", "127.0.0.1", "127.0.0.1", 0, 0, 0) for i in range(1, 4)]
-    backups = [ServerApp(config, ("C1",), logger(io.StringIO()), PassiveConfig("S1", .02), base)
+    passive = ReplicationConfig("passive", .02, "S1")
+    backups = [ServerApp(config, ("C1",), logger(io.StringIO()), passive, base)
                for config in base[1:]]
     for backup in backups:
         await backup.start()
@@ -26,7 +27,7 @@ async def start_passive_cluster():
         replace(app.config, checkpoint_port=app.bound_checkpoint_port) for app in backups
     ]
     primary_stream = io.StringIO()
-    primary = ServerApp(resolved[0], ("C1",), logger(primary_stream), PassiveConfig("S1", .02), resolved)
+    primary = ServerApp(resolved[0], ("C1",), logger(primary_stream), passive, resolved)
     await primary.start()
     return primary, backups, primary_stream
 

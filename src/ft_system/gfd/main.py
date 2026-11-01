@@ -25,7 +25,8 @@ async def run(args):
     gfd = config.gfd
     if args.heartbeat_freq is not None:
         gfd = replace(gfd, heartbeat_freq=args.heartbeat_freq)
-    app = GfdApp(gfd, {lfd.lfd_id: lfd.server_id for lfd in config.lfds.values()}, EventLogger())
+    app = GfdApp(gfd, {lfd.lfd_id: lfd.server_id for lfd in config.lfds.values()}, EventLogger(),
+                 config.rm)
     stopped = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:

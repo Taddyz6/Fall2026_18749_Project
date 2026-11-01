@@ -40,11 +40,23 @@ The M3 smoke test launches GFD, three LFDs, S1-S3, and C1-C3, verifies primary-o
 
 For the required four-computer setup and classroom demo sequence, use the [Chinese M3 distributed demo guide](docs/milestone-3-distributed-demo_zh.md).
 
+## Milestone 4
+
+M4 adds the Replication Manager (`ft_system.rm.main`) and manual recovery, in both active (`configs/m4.active.local.toml`) and passive (`configs/m4.passive.local.toml`) modes. The GFD reports membership to the RM, which prints `RM: N members` and pushes views to replicas and clients. A relaunched replica starts with `i_am_ready = 0`, logs requests without replying, receives a checkpoint from a ready replica, replays its log, and resumes. In passive mode, the RM elects a new primary when the primary fails, and clients follow it.
+
+```bash
+python3 scripts/m4_smoke.py
+```
+
+See the [M4 guide](docs/milestone-4-instructions.md) for the 12-window demo sequences, four-computer commands, design, and trade-offs.
+
+## Milestone 2 smoke test details
+
 This separate, headless test chooses available loopback ports, launches ten child processes, automatically stops S1 and S2, and checks membership, duplicate replies, client progress, and S3 state. It finishes after each client delivers requests 1–60 exactly once, then cleans up. Per-process logs, the generated config, and `result.json` are saved in `logs/m2-smoke/`; use `--output PATH` to select another directory. The **60-request limit belongs to this test**, not to the live M2 demo or the course requirement.
 
 ## Client and replica behavior
 
-Clients send automatically by default in both M1 and M2 configurations; `--interactive` enables manual requests. After a replica connection fails, an M2 client continues with the survivors and does not reconnect that replica during the run. Restart the **whole system** for a fresh M2 demonstration: M2 does not transfer state to a restarted replica.
+Clients send automatically by default in all configurations; `--interactive` enables manual requests. Without an RM (M1–M3 configs), a client continues with the surviving replicas after a connection fails and does not reconnect, so restart the **whole system** for a fresh demonstration. With an RM (M4), clients reconnect to replicas when the RM's view shows that they have rejoined.
 
 Each replica preserves the M1 per-client counter state machine. It remembers the last reply for each client so retrying that client's latest request does not increment twice. Independent client counters converge after every surviving replica has processed the same requests. This design does not provide a general cross-client total order.
 
@@ -55,6 +67,7 @@ python3 -m pytest -q
 python3 scripts/m1_smoke.py
 python3 scripts/m2_smoke.py
 python3 scripts/m3_smoke.py
+python3 scripts/m4_smoke.py
 ```
 
 The tests need pytest installed; the two smoke scripts and visual launcher use the Python standard library. Local loopback testing does not establish that the course's four-machine network setup works. See [design notes](docs/DESIGN.md), the [demo checklist](docs/DEMO.md), and the [distributed config example](configs/m2.distributed.example.toml).
@@ -64,9 +77,9 @@ The M1 single-server configuration remains at `configs/local.toml`. Its client s
 ## Project structure
 
 ```text
-src/ft_system/     protocol, replicas, clients, LFDs, GFD
-configs/           M1 local, M2 local, and distributed examples
-scripts/           M1 smoke, M2 visual launcher, M2 smoke
+src/ft_system/     protocol, replicas, clients, LFDs, GFD, RM
+configs/           M1-M4 local configs and distributed examples
+scripts/           M1-M4 smoke tests, M2 visual launcher
 tests/             unit and integration tests
 docs/              milestone guides, design, and demo checklist
 ```
