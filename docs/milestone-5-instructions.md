@@ -179,12 +179,25 @@ Use the same PID-based kill command with `logs/m5-passive/<replica>.pid`. Verify
   checkpoint, and does not take the primary role back.
 - Each round produces membership `3 -> 2 -> 3`, then three ready replicas.
 - Clients keep running throughout; do not stop/restart them between rounds.
+- For each client, `request_num N: client_value = N` continues across failover.
+  The next successful increment after a primary crash must not repeat an earlier value.
 
-Warm-passive replication retains M4's periodic checkpoint semantics: requests
-acknowledged after the last checkpoint can be lost on primary failure, so a
-counter can roll back. Automatic recovery does not change that durability
-trade-off. Detection/election/reconnection can delay responses; record client
-progress and response gaps instead of claiming literally zero latency.
+Checkpointing remains periodic. The primary applies a request, then waits for
+the next checkpoint that covers it. Each backup acknowledges only after installing
+that checkpoint. Once all backups in the current RM membership have confirmed
+(at least one), the primary logs `checkpoint N confirmed by ...; client replies
+released` and sends the successful replies. A successful reply therefore survives
+a subsequent single primary crash; a retried request is still applied only once.
+
+With the example's 1s checkpoint period, each client's replies normally arrive
+about once per second. All three clients can be covered by one checkpoint. No
+per-request checkpoint is added. Requests without a successful reply can be
+retried after failover. If no backup is available, successful replies wait until
+one returns; a single in-memory copy cannot promise survival of its own crash.
+Keep the client read timeout longer than the checkpoint period plus transfer time
+when changing demo settings. All hosts must run this same version of the code.
+Detection/election/reconnection can also delay responses; record response gaps
+instead of claiming literally zero latency.
 
 ## Recovery settings and shutdown
 
@@ -221,8 +234,9 @@ The smoke runner allocates loopback ports, launches all 11 application processes
 and injects real crashes. Only the LFDs launch the server children; the harness
 never relaunches them. By default, it shortens timers and each client completes
 240 requests. `--demo-timing` preserves the demo config's periods/timeouts and
-uses 1200 requests per client to cover the longer recovery windows. It checks membership,
-readiness, roles, checkpoints, ordered client progress, active consistency and
+uses 1200 active or 30 passive requests per client, accounting for checkpoint-paced
+passive replies. It checks membership, readiness, roles, checkpoints, ordered
+client progress, every reply value and final counter in both modes, and
 cleanup. Output goes into a fresh timestamped directory under `logs/m5-smoke/`,
 with configs, process logs and per-mode `result.json` files. pytest also runs both
 modes starting with each of S1/S2/S3. These are local tests; complete the four-host
@@ -236,6 +250,7 @@ sequences above separately and keep the console logs as physical-network evidenc
 | Three members but fewer ready | Check checkpoint ports/connectivity, donor/primary logs and `i_am_ready`; do not inject another fault yet |
 | Clients cannot reach replicas | Use advertised LAN addresses, not `0.0.0.0`/loopback; verify firewall and network isolation |
 | PID file briefly absent after a kill | The child was reaped and replacement is pending; wait for the new launch and ready view |
+| Passive replies wait while heartbeats continue | Check the checkpoint period, backup installation ACKs and current membership; replies require at least one backup and confirmation from all current backups |
 
 The M5 rubric covers successive replica-process crashes with RM/GFD/LFDs alive.
 Machine/LFD crashes, partitions, all-replica state loss and RM runtime configuration

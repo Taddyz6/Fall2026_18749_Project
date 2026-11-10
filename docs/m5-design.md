@@ -3,6 +3,35 @@
 GOAL-001: Extend `m4-fix` (`ee6bbc6`) so the RM restores crashed active and
 warm-passive replicas without an operator, while clients keep running.
 
+GOAL-002 / REQ-006 / AC-006: In RM-managed passive replication, a successful
+client reply must survive a subsequent single primary crash. Keep periodic
+checkpointing and use the existing standard-library TCP implementation.
+
+ADR-002: Confirm periodic checkpoints before replying. Request-log replication
+and client-history replay would introduce an additional recovery path. Instead,
+add an installation acknowledgement on the existing checkpoint connection and
+delay successful replies until that request is covered on all backups in the
+current membership. At least one backup must hold the checkpoint. This preserves
+the RM's existing choice of any ready backup and batches the three clients in
+the periodic snapshot. The trade-off is reply latency up to the next checkpoint
+(plus transfer time). RM/GFD/LFD crashes, network partitions and simultaneous loss
+of all replicas remain outside the model. Legacy passive mode without an RM
+retains its existing behavior.
+
+MOD-005 / IF-004: `checkpoint_ack`, source = backup, destination = primary,
+payload = `{"checkpoint_count": 7}` (required positive integer). The backup sends
+it only after installing checkpoint 7. The primary checks peer identity and count
+on that same TCP connection. Missing acknowledgements leave client replies
+pending; the next periodic checkpoint retries with current membership. Duplicate
+client requests retain their original result and are not applied twice.
+
+TC-007: Test through the existing client request/reply and checkpoint TCP
+interfaces: successful reply then immediate primary crash; retry before a reply;
+missing checkpoint acknowledgement; backup removal and recovery. Strengthen
+TC-002 so every passive reply value and final counter equals its request number,
+including all three choices of initial primary. Keep the bilingual demo commands
+and document the checkpoint-dependent reply latency.
+
 ## Requirements and acceptance
 
 | Requirement / acceptance | Observable result | Implementation / tests |
@@ -12,9 +41,10 @@ warm-passive replicas without an operator, while clients keep running.
 | REQ-003 / AC-003 | Repeated/concurrent launch commands create at most one owned child. Failed launches retry at the configured cadence; stale commands never kill a running process. | Supervisor and scheduler; TC-003 lifecycle and failure tests |
 | REQ-004 / AC-004 | M1–M4 configs retain manual startup/recovery. Invalid recovery config/messages fail clearly. LFD shutdown terminates/reaps only its owned child. | Config/protocol/CLI; TC-004 contract tests, TC-005 cleanup, existing regression suite |
 | REQ-005 / AC-005 | English and Chinese guides contain executable commands for four hosts, both three-fault sequences, log evidence, shutdown and troubleshooting. | Four configs, bilingual guides and smoke runner; TC-006 document/config review |
+| REQ-006 / AC-006 | After a successful passive reply, killing the primary cannot undo that request; retries do not apply it twice. Periodic checkpoints remain configured by `checkpoint_freq`. | Checkpoint ACK and reply gating; TC-007 TCP regressions and strengthened TC-002 process scenarios |
 
-CON-001: Python >=3.11, asyncio/TCP, standard library only. Preserve M4 warm-passive
-checkpoint semantics and per-client counter model. RM/GFD/LFD failures and network
+CON-001: Python >=3.11, asyncio/TCP, standard library only. Preserve periodic
+checkpoints and the per-client counter model. RM/GFD/LFD failures and network
 partitions remain outside the crash-replica fault model.
 
 ASM-001: Each LFD runs on its replica's machine, with the same code/config available
@@ -24,8 +54,8 @@ wait until that replica is ready before starting the other LFDs.
 
 OOS-001: The user selected the M5 rubric scope. Runtime changes to replication
 style, replica count and timing through an RM admin API are a separate feature.
-No GUI, SSH provisioning, persistent recovery after loss of all replicas, or
-change to warm-passive durability is included.
+No GUI, SSH provisioning or persistent recovery after loss of all replicas is
+included. REQ-006 adds confirmed-request retention within the existing fault model.
 
 ## ADR-001: execute recovery on the replica's host
 

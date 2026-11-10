@@ -72,7 +72,9 @@ writes evidence in a fresh directory under `logs/m5-smoke/`. Only LFDs relaunch
 replicas. Each client completes 240 requests in the test; the live demo runs
 indefinitely. The pytest suite repeats both modes with S1, S2 and S3 starting first.
 `--demo-timing` keeps the demo's original recovery/heartbeat/checkpoint periods and
-timeouts, and extends the workload to 1200 requests per client.
+timeouts, using 1200 active or 30 passive requests per client. Passive replies
+follow the checkpoint period; both modes require every reply value and final
+counter to equal the number of completed requests.
 
 Use the [English four-computer guide](docs/milestone-5-instructions.md) or
 [中文四机演示文档](docs/milestone-5-instructions_zh.md) for exact startup, PID-based
@@ -80,8 +82,13 @@ fault injection, recovery observations and shutdown commands. See the
 [design/contracts](docs/m5-design.md) and [verification report](docs/m5-verification.md).
 The [pre-push review](docs/m5-review-verification.md) records the additional fixes
 and their regression evidence.
-M1–M4 configs keep their original manual process lifecycle. M5 retains M4's
-warm-passive checkpoint loss window; RM runtime configuration changes are deferred.
+The [passive confirmation report](docs/m5-passive-commit-verification.md) records
+the subsequent acknowledged-request retention fix and current validation results.
+M1–M4 configs keep their original manual process lifecycle. RM-managed passive
+replication replies only after a periodic checkpoint covering the request has
+been installed on all current backups (at least one). This retains acknowledged
+updates through a primary crash, at the cost of waiting for the next checkpoint.
+RM runtime configuration changes remain deferred.
 
 ## Milestone 2 smoke test details
 

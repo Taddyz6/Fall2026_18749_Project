@@ -1,5 +1,10 @@
 # M5 pre-push review and verification
 
+Historical record at `7d098ac`. The subsequent
+[passive reply confirmation fix](m5-passive-commit-verification.md) supersedes the
+loss-window behavior and test results below. This earlier review did not establish
+that the instructor permits loss of acknowledged requests.
+
 2026-11-09, macOS / Python 3.13.2. Review baseline: M5 implementation `57f3a34`,
 based on `m4-fix` at `ee6bbc6`. Scope remains the agreed M5 automatic-recovery
 rubric, tests and English/Chinese four-computer demo. This records the review

@@ -48,7 +48,9 @@ class Run:
             raise RuntimeError("Run the M5 process smoke test on macOS, Linux, or WSL")
         self.mode, self.first, self.output = mode, first, Path(output).resolve()
         self.demo_timing = demo_timing
-        self.requests = 1200 if demo_timing else REQUESTS
+        # Passive replies follow the checkpoint period, so 30 requests cover a
+        # comparable demo-length run without shortening that period.
+        self.requests = (30 if mode == "passive" else 1200) if demo_timing else REQUESTS
         # A fresh directory prevents old logs from satisfying current assertions.
         self.output.mkdir(parents=True, exist_ok=False)
         config = (ROOT / "configs" / f"m5.{mode}.local.toml").read_text()
@@ -104,7 +106,8 @@ class Run:
         if self.mode == "active":
             return [(int(n), int(value)) for n, value in re.findall(
                 r"request_num (\d+): Delivered reply from \S+; client_value = (\d+)", text)]
-        return [(int(n), None) for n in re.findall(rf"Received <{client}, S\d+, (\d+), reply>", text)]
+        return [(int(n), int(value)) for n, value in re.findall(
+            rf"{client}: request_num (\d+): client_value = (\d+)", text)]
 
     def counts(self):
         return {client: len(self.replies(client)) for client in CLIENTS}
@@ -150,12 +153,23 @@ class Run:
         os.kill(old_pid, signal.SIGKILL if os.name == "posix" else signal.SIGTERM)
         rm_log = lambda: self.log("RM")[offsets["RM"]:]
         self.wait_for(lambda: "RM: 2 members" in rm_log(), f"{replica} removal")
-        # All clients must progress during the restart delay, before a new process exists.
+        # Reply confirmation and process launch can occur within one polling tick.
+        # Verify degraded-service progress from event times below, not the current PID.
         self.progress(self.counts(), 1)
-        assert self.pid(replica) in (None, old_pid), "progress must occur before the replacement starts"
         self.wait_for(lambda: self.pid(replica) not in (None, old_pid), f"{replica} auto-relaunch")
         new_pid = self.pid(replica)
         self.wait_for(lambda: self.ready() and f"RM: {replica} is ready" in rm_log(), "three ready replicas again")
+        membership_lines = rm_log().splitlines()
+        removed = datetime.fromisoformat(next(line[1:24] for line in membership_lines if "RM: 2 members" in line))
+        rejoined = datetime.fromisoformat(next(line[1:24] for line in membership_lines if "RM: 3 members" in line))
+        degraded_replies = {}
+        for client in CLIENTS:
+            pattern = r"Delivered reply from (S\d+)" if self.mode == "active" else rf"Received <{client}, (S\d+),"
+            degraded_replies[client] = sum(
+                removed <= datetime.fromisoformat(line[1:24]) < rejoined and match[1] != replica
+                for line in self.log(client)[offsets[client]:].splitlines()
+                if (match := re.search(pattern, line)))
+            assert degraded_replies[client] > 0, f"{client} made no progress through a surviving replica with two members"
         recovered = self.log(replica)[offsets[replica]:]
         assert "i_am_ready = 0 (waiting for the RM)" in recovered
         recovered = recovered[recovered.index("i_am_ready = 0 (waiting for the RM)"):]
@@ -180,6 +194,7 @@ class Run:
         self.rounds.append({"replica": replica, "old_pid": old_pid, "new_pid": new_pid,
                             "seconds_until_ready": round(time.monotonic() - started, 3),
                             "replies_before": before, "replies_after": self.counts(),
+                            "replies_while_two_members": degraded_replies,
                             "primary": self.primary()})
 
     def state(self, replica):
@@ -194,15 +209,11 @@ class Run:
             replies = self.replies(client)
             assert [n for n, _ in replies] == list(range(1, self.requests + 1)), client
             assert "divergence" not in self.log(client)
+            assert all(n == value for n, value in replies), f"{client}: acknowledged state was lost or duplicated"
             if self.mode == "active":
-                assert all(n == value for n, value in replies)
                 assert "Discarded duplicate reply" in self.log(client)
         expected = {client: self.requests for client in CLIENTS}
-        if self.mode == "active":
-            self.wait_for(lambda: all(self.state(r) == expected for r in REPLICAS), "final active state consistency")
-        else:
-            self.wait_for(lambda: len({json.dumps(self.state(r), sort_keys=True) for r in REPLICAS}) == 1
-                          and self.state(self.primary()) is not None, "final passive checkpoint consistency")
+        self.wait_for(lambda: all(self.state(r) == expected for r in REPLICAS), "all acknowledged updates retained")
         gaps = {}
         for client in CLIENTS:
             token = "Delivered reply" if self.mode == "active" else f"Received <{client},"
@@ -259,7 +270,7 @@ def main():
     parser.add_argument("--mode", choices=("active", "passive", "both"), default="both")
     parser.add_argument("--first", choices=REPLICAS, default="S1", help="Initial primary in passive mode")
     parser.add_argument("--demo-timing", action="store_true",
-                        help="Keep the demo config's periods/timeouts; run 1200 requests per client")
+                        help="Keep demo periods/timeouts; run 1200 active or 30 passive requests per client")
     parser.add_argument("--output", type=Path, default=ROOT / "logs/m5-smoke")
     args = parser.parse_args()
     output = args.output.resolve() / datetime.now().strftime("%Y%m%d-%H%M%S-%f")

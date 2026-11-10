@@ -123,6 +123,8 @@ class PassiveClientApp:
                 await self._drop_primary()
                 raise
             self.logger.received(reply, "reply")
+            self.logger.event(f"{self.client_id}: request_num {self._next_request_num}: "
+                              f"client_value = {reply['payload']['client_value']}")
             self._next_request_num += 1
             return reply
 

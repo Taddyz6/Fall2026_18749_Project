@@ -71,7 +71,7 @@ Use the passive config and the same start sequence. The RM prints `RM: primary i
 
 ## Trade-offs and limitations (for Q&A)
 
-- **Warm-passive data loss window.** Requests the old primary applied after its last checkpoint are lost on failover. The window is bounded by `checkpoint_freq`, and the new primary prints which request numbers were lost. A client can see its counter step back by that many requests. This is the cost of periodic rather than per-request checkpoints.
+- **Passive reply latency on the current M5 branch.** RM-managed passive replies wait until a periodic checkpoint covering the request is installed on all current backups (at least one). This also applies when running M4 configs with this code. Successful replies survive a primary crash; replies normally follow the checkpoint period. The earlier M4 implementation replied before this confirmation and had a loss window. Legacy M3 without an RM keeps its original behavior.
 - **The RM is the authority on readiness.** If the RM is down, a new replica cannot become ready. The RM, GFD, and LFDs are accepted single points of failure. Components reconnect to a restarted RM, but restarting the RM mid-run is not part of the demo.
 - **Catch-up relies on the application.** It depends on per-client independent state and per-connection FIFO order. A general application would need a total order across clients and a full message log.
 - **Membership vs. readiness.** `RM: N members` counts live replicas, matching the GFD. A relaunched replica is a member for about `transfer_delay` before it is ready; the view lists both.

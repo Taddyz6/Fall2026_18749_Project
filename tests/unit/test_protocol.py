@@ -10,6 +10,7 @@ from ft_system.common.protocol import (
     build_heartbeat,
     build_heartbeat_ack,
     build_checkpoint,
+    build_checkpoint_ack,
     build_hello,
     build_membership_report,
     build_replica_status,
@@ -105,6 +106,21 @@ def test_checkpoint_carries_state_and_checkpoint_count():
 def test_checkpoint_requires_request_numbers_for_exactly_the_state_clients():
     with pytest.raises(ProtocolError, match="last_request_nums"):
         build_checkpoint("S1", "S2", {"C1": 4, "C2": 2}, {"C1": 4}, 1)
+
+
+def test_checkpoint_ack_identifies_the_installed_checkpoint():
+    ack = build_checkpoint_ack(build_checkpoint("S1", "S2", {"C1": 4}, {"C1": 4}, 7))
+    assert decode_message(encode_message(ack)) == {
+        "version": 1, "type": "checkpoint_ack", "source": "S2", "destination": "S1",
+        "payload": {"checkpoint_count": 7},
+    }
+
+
+def test_checkpoint_ack_requires_a_positive_checkpoint_number():
+    ack = build_checkpoint_ack(build_checkpoint("S1", "S2", {"C1": 4}, {"C1": 4}, 7))
+    ack["payload"]["checkpoint_count"] = 0
+    with pytest.raises(ProtocolError, match="checkpoint_count"):
+        encode_message(ack)
 
 
 def test_checkpoint_count_starts_at_one():

@@ -13,6 +13,7 @@ from ft_system.common.protocol import (
     MessageType,
     ProtocolError,
     build_checkpoint,
+    build_checkpoint_ack,
     build_client_reply,
     build_client_request,
     build_error,
@@ -26,6 +27,7 @@ from ft_system.common.transport import (
     MAX_MESSAGE_BYTES,
     close_writer,
     read_message,
+    read_message_with_timeout,
     write_message,
 )
 from ft_system.server.state_machine import (
@@ -66,6 +68,7 @@ class ClientListener:
         role: str = "active",
         strict_order: bool = False,
         on_ready_change: Callable[[bool], None] | None = None,
+        wait_for_checkpoint: Callable[[str, int], Awaitable[None]] | None = None,
     ) -> None:
         self._replica_id = replica_id
         self._state_machine = state_machine
@@ -79,6 +82,7 @@ class ClientListener:
         # missed requests that other replicas applied, and ask for fresh state.
         self.strict_order = strict_order
         self.on_ready_change = on_ready_change
+        self.wait_for_checkpoint = wait_for_checkpoint
         self.high_watermark: dict[str, int] = {}
         self._backlog: list[tuple[dict[str, Any], asyncio.StreamWriter]] = []
 
@@ -97,7 +101,6 @@ class ClientListener:
         if previous is not None and request["request_num"] <= previous[0]:
             if request["request_num"] == previous[0] and request["payload"]["operation"] == previous[1]:
                 self._logger.event(f"{self._replica_id}: replaying reply for {request['request_id']}")
-                self._logger.sending(previous[2], "reply")
                 return previous[2]
             return build_error(self._replica_id, request["client_id"], "stale_request",
                                "request number is stale or was reused for another operation",
@@ -130,7 +133,6 @@ class ClientListener:
         self._last_replies[request["client_id"]] = (
             request["request_num"], request["payload"]["operation"], reply
         )
-        self._logger.sending(reply, "reply")
         return reply
 
     def _log_unready(self, request: dict[str, Any], writer: asyncio.StreamWriter) -> None:
@@ -152,6 +154,9 @@ class ClientListener:
             if self.role == "backup":
                 return build_error(self._replica_id, request["client_id"], "not_primary",
                                    self.primary_hint or "unknown", request["request_id"])
+            if not self.ready and self.wait_for_checkpoint is not None:
+                return build_error(self._replica_id, request["client_id"], "not_ready",
+                                   "waiting for the RM", request["request_id"])
             client_id, number = request["client_id"], request["request_num"]
             last = self._last_num(client_id)
             if self.ready and number > last + 1:
@@ -209,6 +214,7 @@ class ClientListener:
                 continue
             try:
                 # Write while holding the lock so later replies on this connection stay behind.
+                self._logger.sending(reply, "reply")
                 writer.write(encode_message(reply))
             except (RuntimeError, ConnectionError, OSError):
                 continue
@@ -277,6 +283,10 @@ class ClientListener:
 
                 response = await self._process(message, writer)
                 if response is not None:
+                    if response["type"] == MessageType.CLIENT_REPLY:
+                        if self.wait_for_checkpoint is not None:
+                            await self.wait_for_checkpoint(message["client_id"], message["request_num"])
+                        self._logger.sending(response, "reply")
                     await write_message(writer, response)
         except (ConnectionError, OSError) as exc:
             self._logger.error(self._replica_id, f"client connection closed: {exc}")
@@ -290,7 +300,7 @@ class CheckpointListener:
     def __init__(
         self,
         replica_id: str,
-        on_checkpoint: Callable[[dict[str, Any]], Awaitable[None]],
+        on_checkpoint: Callable[[dict[str, Any]], Awaitable[bool]],
         logger: EventLogger,
     ) -> None:
         self._replica_id = replica_id
@@ -307,7 +317,8 @@ class CheckpointListener:
                 if (message["type"] != MessageType.CHECKPOINT
                         or message["destination"] != self._replica_id):
                     raise ProtocolError("checkpoint port accepts only checkpoints addressed to this replica")
-                await self._on_checkpoint(message)
+                if await self._on_checkpoint(message):
+                    await write_message(writer, build_checkpoint_ack(message))
         except (ConnectionError, OSError, ProtocolError, StateMachineError) as exc:
             self._logger.error(self._replica_id, f"checkpoint connection: {str(exc) or type(exc).__name__}")
         finally:
@@ -392,6 +403,7 @@ class ServerApp:
         self.client_listener = ClientListener(
             config.replica_id, self.state_machine, logger, ready=ready, role=role,
             strict_order=rm is not None and not self._passive, on_ready_change=self._ready_changed,
+            wait_for_checkpoint=self._wait_for_checkpoint if rm is not None and self._passive else None,
         )
         self.heartbeat_listener = HeartbeatListener(config.replica_id, logger)
         self.checkpoint_listener = CheckpointListener(config.replica_id, self._receive_checkpoint, logger)
@@ -408,6 +420,9 @@ class ServerApp:
         self._checkpoint_task: asyncio.Task[None] | None = None
         self._background: set[asyncio.Task[Any]] = set()
         self._peer_writers: dict[str, asyncio.StreamWriter] = {}
+        self._peer_readers: dict[str, asyncio.StreamReader] = {}
+        self._committed_requests: dict[str, int] = {}
+        self._checkpoint_changed = asyncio.Event()
         # One lock per peer, so an unreachable replica cannot delay checkpoints to the others.
         self._peer_locks: dict[str, asyncio.Lock] = {}
 
@@ -547,6 +562,9 @@ class ServerApp:
             if role == self.role and not first:
                 return
             self.client_listener.role = role
+            self._committed_requests = {}
+            self._checkpoint_changed.set()
+            self._checkpoint_changed = asyncio.Event()
             if role == "primary":
                 # Continue the checkpoint numbering the previous primary started.
                 self.checkpoint_count = max(self.checkpoint_count, self.received_checkpoint_count + 1)
@@ -559,6 +577,14 @@ class ServerApp:
             self._spawn(self._open_peer_channels())
 
     # Secondary channel ----------------------------------------------------
+
+    async def _wait_for_checkpoint(self, client_id: str, request_num: int) -> None:
+        # Do not hold the request-processing lock: the periodic snapshot needs it.
+        while self.role == "primary":
+            if self._committed_requests.get(client_id, 0) >= request_num:
+                return
+            await self._checkpoint_changed.wait()
+        raise ConnectionError("primary changed before checkpoint confirmation")
 
     def _checkpoint_targets(self) -> list[str]:
         me = self.config.replica_id
@@ -581,12 +607,13 @@ class ServerApp:
             self._logger.error(me, f"no checkpoint address for {peer}")
             return None
         try:
-            _, writer = await open_connection_with_timeout(
+            reader, writer = await open_connection_with_timeout(
                 server.advertised_host, server.checkpoint_port, PEER_TIMEOUT)
         except (TimeoutError, ConnectionError, OSError) as exc:
             self._logger.error(me, f"checkpoint to {peer} unavailable: {str(exc) or type(exc).__name__}")
             return None
         self._peer_writers[peer] = writer
+        self._peer_readers[peer] = reader
         self._logger.event(f"{me}: secondary channel to {peer} open")
         return writer
 
@@ -600,6 +627,7 @@ class ServerApp:
     async def _close_peer(self, peer: str) -> None:
         async with self._peer_lock(peer):
             writer = self._peer_writers.pop(peer, None)
+            self._peer_readers.pop(peer, None)
         await close_writer(writer)
 
     async def _send_checkpoint(
@@ -613,12 +641,17 @@ class ServerApp:
             try:
                 message = build_checkpoint(me, peer, state, last_request_nums, count)
                 await asyncio.wait_for(write_message(writer, message), PEER_TIMEOUT)
-            except (TimeoutError, ConnectionError, OSError) as exc:
+                self._logger.checkpoint_sent(me, peer, state, count)
+                ack = await read_message_with_timeout(self._peer_readers[peer], PEER_TIMEOUT)
+                if (ack["type"] != MessageType.CHECKPOINT_ACK or ack["source"] != peer
+                        or ack["destination"] != me or ack["payload"]["checkpoint_count"] != count):
+                    raise ProtocolError("checkpoint acknowledgement does not match the transfer")
+            except (EOFError, TimeoutError, ConnectionError, OSError, ProtocolError) as exc:
                 self._logger.error(me, f"checkpoint to {peer} failed: {str(exc) or type(exc).__name__}")
                 self._peer_writers.pop(peer, None)
+                self._peer_readers.pop(peer, None)
                 await close_writer(writer)
                 return False
-        self._logger.checkpoint_sent(me, peer, state, count)
         return True
 
     def _start_checkpointing(self) -> None:
@@ -638,10 +671,20 @@ class ServerApp:
                 continue
             state, last_request_nums = await self.client_listener.checkpoint_payload()
             count = self.checkpoint_count
+            targets = self._checkpoint_targets()
             sent = await asyncio.gather(*(self._send_checkpoint(peer, state, last_request_nums, count)
-                                          for peer in self._checkpoint_targets()))
+                                          for peer in targets))
             if any(sent):
                 self.checkpoint_count += 1
+            confirmed = {peer for peer, installed in zip(targets, sent) if installed}
+            current = set(self._checkpoint_targets())
+            if (self.client_listener.wait_for_checkpoint is not None and self.role == "primary"
+                    and current and current <= confirmed):
+                self._committed_requests = last_request_nums
+                self._checkpoint_changed.set()
+                self._checkpoint_changed = asyncio.Event()
+                self._logger.event(f"{self.config.replica_id}: checkpoint {count} confirmed by "
+                                   f"{', '.join(sorted(current))}; client replies released")
 
     async def _transfer_state(self, target: str) -> None:
         me = self.config.replica_id
@@ -653,7 +696,7 @@ class ServerApp:
         count, self.checkpoint_count = self.checkpoint_count, self.checkpoint_count + 1
         await self._send_checkpoint(target, state, last_request_nums, count)
 
-    async def _receive_checkpoint(self, message: dict[str, Any]) -> None:
+    async def _receive_checkpoint(self, message: dict[str, Any]) -> bool:
         me = self.config.replica_id
         source, payload = message["source"], message["payload"]
         count = payload["checkpoint_count"]
@@ -661,18 +704,20 @@ class ServerApp:
         listener = self.client_listener
         if self.role == "primary":
             self._logger.event(f"{me}: ignoring checkpoint from {source}; this replica is the primary")
-            return
+            return False
         if self._passive and self._view is not None and source != self._view["primary"]:
             self._logger.event(f"{me}: ignoring checkpoint from {source}; the primary is {self._view['primary']}")
-            return
+            return False
         if not self._passive and listener.ready:
             # A ready active replica may already hold requests the snapshot lacks.
             self._logger.event(f"{me}: already ready; ignoring checkpoint from {source}")
             await self._report_status()
-            return
+            return False
         if await listener.install_checkpoint(payload["state"], payload["last_request_nums"]):
             self.received_checkpoint_count = count
             self._logger.checkpoint_installed(me, source, self.state_machine.snapshot(), count)
+            return True
+        return False
 
     async def close(self) -> None:
         servers = [
@@ -692,6 +737,7 @@ class ServerApp:
         await asyncio.gather(*background, return_exceptions=True)
         peers = list(self._peer_writers.values())
         self._peer_writers.clear()
+        self._peer_readers.clear()
         await asyncio.gather(*(close_writer(writer) for writer in peers))
         for server in servers:
             server.close()
@@ -703,6 +749,8 @@ class ServerApp:
         current = asyncio.current_task()
         tasks = tuple(task for task in self._handler_tasks if task is not current)
         if tasks:
+            for task in tasks:
+                task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
 
         if servers:

@@ -3,6 +3,8 @@
 This is the initial implementation record at `57f3a34`. The subsequent
 [pre-push review and final checks](m5-review-verification.md) supersede its test
 count and readiness/checkpoint-evidence findings.
+The later [passive reply confirmation fix](m5-passive-commit-verification.md)
+supersedes the acknowledged-update loss limitation described in this historical record.
 
 2026-11-09, macOS / Python 3.13.2. Branch `m5` starts from `m4-fix` commit
 `ee6bbc6`. The agreed scope is the M5 automatic-recovery rubric, tests, and

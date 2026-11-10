@@ -166,10 +166,20 @@ server 启动命令。
 - 原 primary 恢复后输出 `role = backup (primary is ...)`，安装 checkpoint，不抢回主角色。
 - 每轮 membership 都是 `3 -> 2 -> 3`，随后三个副本都 ready。
 - 整个演示保持 client 运行，轮次之间不暂停、不重启 client。
+- 每个 client 的 `request_num N: client_value = N` 在切主前后都应成立；
+  primary 崩溃后的下一次成功加法不能返回之前已经出现过的值。
 
-Warm-passive 沿用 M4 的周期 checkpoint 语义：最后一次 checkpoint 之后已经确认的请求
-可能在 primary 故障时丢失，counter 因此可能回退。自动恢复不会改变这个持久性取舍。
-故障检测、选主和重连期间可能产生响应延迟，应观察持续进展和响应间隔，不应宣称零延迟。
+Checkpoint 仍按周期发送。Primary 执行请求后，等待下一次包含该请求的 checkpoint。
+Backup 安装完成后才回 ACK；当前 RM membership 中所有 backup 均确认，且至少有一个
+backup 时，primary 输出 `checkpoint N confirmed by ...; client replies released`，
+再发送成功回复。因此已成功回复的请求能保留到一次后续 primary 崩溃之后；重试也不会重复执行。
+
+示例的 checkpoint 周期是 1 秒，因此每个 client 通常约每秒收到一次回复，三个 client
+可由同一份 checkpoint 一起确认，并未改成每请求发送 checkpoint。未收到成功回复的请求
+可以在切主后重试。如果没有可用 backup，成功回复会等待 backup 回来；单个内存副本无法
+保证自身崩溃后的数据保留。修改演示参数时，client 的 read timeout 应大于 checkpoint
+周期加传输时间。所有机器必须使用同一版本代码。故障检测、选主和重连也会增加响应延迟，
+应记录响应间隔，不应宣称零延迟。
 
 ## 配置与关闭
 
@@ -204,9 +214,10 @@ restart_retry = 1.0
 
 Smoke 自动分配 loopback 端口，启动 11 个业务进程并实际杀掉副本。只有 LFD 可以
 启动 server 子进程，测试脚本不会替系统重启副本。默认缩短各计时参数，每个 client
-完成 240 个请求。`--demo-timing` 保留演示配置的原有周期和超时，每个 client 完成
-1200 个请求，以覆盖更长的恢复过程。检查 membership、readiness、主备角色、checkpoint、
-请求顺序、active 一致性和退出清理。
+完成 240 个请求。`--demo-timing` 保留演示配置的原有周期和超时，每个 client 在 active
+下完成 1200 个请求，在 passive 下完成 30 个请求，以适配按 checkpoint 周期返回的回复。
+检查 membership、readiness、主备角色、checkpoint、请求顺序、两种模式的每次回复值和
+最终计数，以及退出清理。
 配置、各进程日志和各模式的 `result.json` 写入 `logs/m5-smoke/` 下新的时间戳目录。
 pytest 还会分别让 S1/S2/S3 先启动，覆盖两种模式。
 这些是本机测试；四机网络仍需实际执行上面的流程，并保留终端日志作为现场证据。
@@ -219,6 +230,7 @@ pytest 还会分别让 S1/S2/S3 先启动，覆盖两种模式。
 | 成员数为三但 ready 不足三个 | checkpoint 端口连通性、donor/primary 日志、`i_am_ready`；先等状态同步完成 |
 | Client 连不上副本 | advertised 地址必须是真实 LAN 地址，不能用 `0.0.0.0`/loopback；检查防火墙及网络隔离 |
 | 杀进程后短暂没有 PID 文件 | 旧进程已回收，新进程尚未启动；等待新 PID 和 ready view |
+| Passive 回复等待，但 heartbeat 继续 | 检查 checkpoint 周期、backup 安装 ACK 和当前 membership；成功回复要求至少一个 backup，且当前所有 backup 均已确认 |
 
 本次 M5 rubric 验证的是 RM/GFD/LFD 保持运行时的连续副本进程崩溃。整机/LFD 崩溃、
 网络分区、全部副本状态丢失，以及通过 RM 在运行时修改配置，不属于本次实现范围。

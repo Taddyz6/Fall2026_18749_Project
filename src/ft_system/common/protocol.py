@@ -24,6 +24,7 @@ class MessageType(StrEnum):
     REGISTER = "register"
     MEMBERSHIP = "membership"
     CHECKPOINT = "checkpoint"
+    CHECKPOINT_ACK = "checkpoint_ack"
     HELLO = "hello"
     MEMBERSHIP_REPORT = "membership_report"
     VIEW = "view"
@@ -174,6 +175,10 @@ def validate_message(message: Mapping[str, Any]) -> dict[str, Any]:
         for value in last.values():
             _require_non_negative_int(value, "last_request_nums value")
         payload["last_request_nums"] = last
+    elif message_type is MessageType.CHECKPOINT_ACK:
+        payload["checkpoint_count"] = _require_positive_int(
+            payload.get("checkpoint_count"), "checkpoint_count"
+        )
     elif message_type is MessageType.HELLO:
         _require_rm_destination(validated)
         if _require_string(payload.get("kind"), "kind") not in RM_PEER_KINDS:
@@ -349,6 +354,17 @@ def build_hello(source: str, kind: str) -> dict[str, Any]:
     return validate_message({
         "version": PROTOCOL_VERSION, "type": MessageType.HELLO,
         "source": source, "destination": RM_ID, "payload": {"kind": kind},
+    })
+
+
+def build_checkpoint_ack(checkpoint: Mapping[str, Any]) -> dict[str, Any]:
+    checkpoint = validate_message(checkpoint)
+    if checkpoint["type"] != MessageType.CHECKPOINT:
+        raise ProtocolError("checkpoint ACK requires a checkpoint")
+    return validate_message({
+        "version": PROTOCOL_VERSION, "type": MessageType.CHECKPOINT_ACK,
+        "source": checkpoint["destination"], "destination": checkpoint["source"],
+        "payload": {"checkpoint_count": checkpoint["payload"]["checkpoint_count"]},
     })
 
 
