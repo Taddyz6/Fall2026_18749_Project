@@ -199,6 +199,46 @@ when changing demo settings. All hosts must run this same version of the code.
 Detection/election/reconnection can also delay responses; record response gaps
 instead of claiming literally zero latency.
 
+### Explaining consistency, latency and continuous operation
+
+In `18-749 _ The Project.docx`, the FAQ **“What do you mean by trade-offs in the
+system?”** explicitly discusses consistency versus performance, including
+“a blocking implementation that then affects latency”. The FAQ **“Should the
+clients be automated, and running in a loop?”** requires the application to keep
+running during the demo. M5's passive rubric also expects clients to receive
+responses while the group temporarily has two replicas and RM recovers the third.
+Together, these support the following interpretation of continuous operation:
+clients keep their automatic loops running, and surviving replicas keep completing
+requests throughout recovery. The supplied rubric specifies no fixed request rate
+or maximum response latency.
+
+Each client uses a sequential request–reply loop: it waits for the current reply
+before sending the next request. Checkpoint confirmation therefore lowers its
+request rate and adds response latency. The wait releases the server's request
+processing lock, allowing other requests, checkpoints and heartbeats to proceed.
+Clients automatically retry through failover without being manually paused or
+restarted. In return, a successful reply represents state already installed on
+the backups eligible for promotion, preserving acknowledged updates after a
+single primary crash under the fault model described below.
+
+For acceptance, show successful replies from surviving replicas **during each
+two-member interval**, progressing per-client counters and continuing checkpoints,
+followed by automatic recovery to three ready replicas. Keep response timestamps
+to explain any gaps. In the [local verification run](m5-passive-commit-verification.md)
+with the original 1s checkpoint period, all three clients received a successful
+reply in each of the three two-member intervals. The maximum observed reply gap,
+including failover, was **2.004s**; each client completed 30 requests and every
+replica ended at **30/30/30**. These are local observations, not a latency bound;
+repeat the check on the four demo computers.
+
+Suggested explanation during the demo:
+
+> Our clients keep running their automatic request–reply loops throughout the
+> failures. We retain periodic checkpoints and reply successfully only after the
+> backups install the request's state, trading response latency for preservation
+> of acknowledged updates. While one replica is recovering, the surviving two
+> continue completing requests, and no client needs to be paused or restarted.
+
 ## Recovery settings and shutdown
 
 ```toml

@@ -181,6 +181,35 @@ backup 时，primary 输出 `checkpoint N confirmed by ...; client replies relea
 周期加传输时间。所有机器必须使用同一版本代码。故障检测、选主和重连也会增加响应延迟，
 应记录响应间隔，不应宣称零延迟。
 
+### 验收时解释一致性、延迟与持续运行
+
+`18-749 _ The Project.docx` 的 FAQ **“What do you mean by trade-offs in the
+system?”** 明确讨论了一致性与性能的取舍，包括
+“a blocking implementation that then affects latency”（阻塞实现会影响延迟）。
+FAQ **“Should the clients be automated, and running in a loop?”** 要求演示期间
+应用持续运行。M5 passive rubric 也要求副本暂时只剩两个、RM 正在恢复第三个时，
+client 仍能收到回复。因此，我们将“持续运行”理解为：client 的自动循环保持运行，
+存活副本在恢复期间持续完成请求。提供的 rubric 没有规定固定请求速率或最大响应延迟。
+
+每个 client 使用串行 request–reply 循环：收到当前请求的回复后，才发送下一条请求。
+等待 checkpoint 确认会降低请求速率、增加响应延迟。等待期间会释放 server 的请求处理锁，
+其他请求、checkpoint 和 heartbeat 可以继续执行。切主时 client 自动重试，无需人工
+暂停或重启。换来的保证是：成功回复对应的状态已经安装到可被选为新 primary 的 backup，
+在后文规定的故障模型下，一次 primary 崩溃不会丢失已确认的更新。
+
+验收时，应展示**每轮仅剩两个成员期间**，存活副本仍有成功回复、各 client 的计数继续
+增长、checkpoint 继续发送，随后自动恢复为三个 ready 副本；保留回复时间戳以说明间隔。
+[本机验证记录](m5-passive-commit-verification.md) 使用原有 1 秒 checkpoint 周期，
+三轮仅剩两个成员的区间内，三个 client 每轮都各收到一次成功回复。包含切主在内的最大
+实测回复间隔为 **2.004 秒**；每个 client 完成 30 个请求，所有副本最终状态均为
+**30/30/30**。这是本机观测值，不是延迟上限；四台演示机器上还需重复核对。
+
+现场可以这样解释：
+
+> 故障期间，三个 client 始终运行自动请求—回复循环。我们保留周期 checkpoint，等 backup
+> 安装了请求对应的状态才回复成功，用响应延迟换取已确认更新的保留。一个副本正在恢复时，
+> 其余两个副本继续完成请求，整个过程不需要暂停或重启 client。
+
 ## 配置与关闭
 
 ```toml
