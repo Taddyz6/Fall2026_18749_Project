@@ -29,12 +29,14 @@ class MessageType(StrEnum):
     VIEW = "view"
     RM_COMMAND = "rm_command"
     REPLICA_STATUS = "replica_status"
+    LAUNCH_RESULT = "launch_result"
 
 
 RM_ID = "RM"
-RM_PEER_KINDS = frozenset({"gfd", "server", "client"})
+RM_PEER_KINDS = frozenset({"gfd", "server", "client", "lfd"})
 REPLICATION_MODES = frozenset({"active", "passive"})
-RM_COMMANDS = frozenset({"set_ready", "transfer_state"})
+RM_COMMANDS = frozenset({"set_ready", "transfer_state", "ensure_replica"})
+LAUNCH_STATUSES = frozenset({"started", "running", "external", "failed"})
 
 
 def _require_mapping(value: Any, field: str) -> dict[str, Any]:
@@ -175,7 +177,7 @@ def validate_message(message: Mapping[str, Any]) -> dict[str, Any]:
     elif message_type is MessageType.HELLO:
         _require_rm_destination(validated)
         if _require_string(payload.get("kind"), "kind") not in RM_PEER_KINDS:
-            raise ProtocolError("hello kind must be gfd, server, or client")
+            raise ProtocolError("hello kind must be gfd, server, client, or lfd")
     elif message_type is MessageType.MEMBERSHIP_REPORT:
         _require_rm_destination(validated)
         payload["members"] = _require_id_list(payload.get("members"), "members")
@@ -185,8 +187,8 @@ def validate_message(message: Mapping[str, Any]) -> dict[str, Any]:
     elif message_type is MessageType.RM_COMMAND:
         _require_rm_source(validated)
         if _require_string(payload.get("command"), "command") not in RM_COMMANDS:
-            raise ProtocolError("command must be set_ready or transfer_state")
-        if payload["command"] == "transfer_state":
+            raise ProtocolError("command must be set_ready, transfer_state, or ensure_replica")
+        if payload["command"] in {"transfer_state", "ensure_replica"}:
             payload["target"] = _require_string(payload.get("target"), "target")
     elif message_type is MessageType.REPLICA_STATUS:
         _require_rm_destination(validated)
@@ -195,6 +197,19 @@ def validate_message(message: Mapping[str, Any]) -> dict[str, Any]:
         payload["checkpoint_count"] = _require_non_negative_int(
             payload.get("checkpoint_count"), "checkpoint_count"
         )
+    elif message_type is MessageType.LAUNCH_RESULT:
+        _require_rm_destination(validated)
+        payload["replica_id"] = _require_string(payload.get("replica_id"), "replica_id")
+        status = _require_string(payload.get("status"), "status")
+        if status not in LAUNCH_STATUSES:
+            raise ProtocolError("invalid launch status")
+        if "pid" not in payload:
+            raise ProtocolError("launch result requires pid (null for external/failed)")
+        if status in {"started", "running"}:
+            payload["pid"] = _require_positive_int(payload.get("pid"), "pid")
+        elif payload.get("pid") is not None:
+            raise ProtocolError("external/failed launch status must have a null pid")
+        payload["detail"] = _require_string(payload.get("detail"), "detail")
     else:
         payload["code"] = _require_string(payload.get("code"), "code")
         payload["detail"] = _require_string(payload.get("detail"), "detail")
@@ -366,4 +381,13 @@ def build_replica_status(replica_id: str, ready: bool, checkpoint_count: int) ->
         "version": PROTOCOL_VERSION, "type": MessageType.REPLICA_STATUS,
         "source": replica_id, "destination": RM_ID,
         "payload": {"ready": ready, "checkpoint_count": checkpoint_count},
+    })
+
+
+def build_launch_result(lfd_id: str, replica_id: str, status: str,
+                        pid: int | None, detail: str) -> dict[str, Any]:
+    return validate_message({
+        "version": PROTOCOL_VERSION, "type": MessageType.LAUNCH_RESULT,
+        "source": lfd_id, "destination": RM_ID,
+        "payload": {"replica_id": replica_id, "status": status, "pid": pid, "detail": detail},
     })

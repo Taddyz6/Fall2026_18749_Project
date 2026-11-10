@@ -33,7 +33,9 @@ async def run(args):
     rm = config.rm
     if args.transfer_delay is not None:
         rm = replace(rm, transfer_delay=args.transfer_delay)
-    app = RmApp(rm, config.replication.mode, config.servers, config.clients, EventLogger())
+    app = RmApp(rm, config.replication.mode, config.servers, config.clients, EventLogger(),
+                recovery=config.recovery,
+                lfd_servers={ident: lfd.server_id for ident, lfd in config.lfds.items()})
     stopped = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:

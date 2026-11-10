@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
-from ft_system.common.config import RmConfig
+from ft_system.common.config import RecoveryConfig, RmConfig
 from ft_system.common.logging import EventLogger
 from ft_system.common.protocol import (
     MessageType, ProtocolError, build_rm_command, build_view,
@@ -34,6 +34,9 @@ class RmApp:
         server_ids: Iterable[str],
         client_ids: Iterable[str],
         logger: EventLogger,
+        *,
+        recovery: RecoveryConfig = RecoveryConfig(),
+        lfd_servers: dict[str, str] | None = None,
     ) -> None:
         self.config = config
         self.logger = logger
@@ -52,6 +55,13 @@ class RmApp:
         self._tasks: set[asyncio.Task] = set()
         self._server: asyncio.Server | None = None
         self._dispatcher: asyncio.Task | None = None
+        self.recovery = recovery
+        self._lfd_servers = dict(lfd_servers or {})
+        self._lfds: dict[str, _Peer] = {}
+        self._membership_known = False
+        self._restart_due: dict[str, float] = {}
+        self._recovery_wake = asyncio.Event()
+        self._recovery_dispatcher: asyncio.Task | None = None
 
     @property
     def bound_port(self) -> int:
@@ -71,6 +81,9 @@ class RmApp:
         self.logger.event(f"RM: replication mode = {self.policy.mode}")
         self.logger.membership([], "RM")
         self._dispatcher = asyncio.create_task(self._dispatch())
+        if self.recovery.enabled:
+            self.logger.event("RM: automatic recovery enabled")
+            self._recovery_dispatcher = asyncio.create_task(self._recover())
 
     async def close(self) -> None:
         if self._server is not None:
@@ -78,10 +91,13 @@ class RmApp:
             await self._server.wait_closed()
             self._server = None
         tasks = list(self._tasks) + ([self._dispatcher] if self._dispatcher else [])
+        if self._recovery_dispatcher is not None:
+            tasks.append(self._recovery_dispatcher)
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         self._dispatcher = None
+        self._recovery_dispatcher = None
 
     # Sessions -----------------------------------------------------------
 
@@ -94,10 +110,19 @@ class RmApp:
             if ident != "GFD":
                 raise ProtocolError("the GFD must register as GFD")
             previous, self._gfd = self._gfd, peer
+            self._membership_known = False
+            self._sync_recovery()
         elif kind == "server":
             if ident not in self._server_ids:
                 raise ProtocolError(f"unknown replica {ident}")
             previous, self._servers[ident] = self._servers.get(ident), peer
+        elif kind == "lfd":
+            if not self.recovery.enabled or ident not in self._lfd_servers:
+                raise ProtocolError(f"unknown or disabled recovery LFD {ident}")
+            if ident in self._lfds:
+                raise ProtocolError(f"recovery LFD {ident} already connected")
+            previous, self._lfds[ident] = None, peer
+            self._sync_recovery()
         else:
             if ident not in self._client_ids:
                 raise ProtocolError(f"unknown client {ident}")
@@ -111,11 +136,16 @@ class RmApp:
     def _unregister(self, kind: str, ident: str, peer: _Peer) -> None:
         if kind == "gfd" and self._gfd is peer:
             self._gfd = None
+            self._membership_known = False
+            self._sync_recovery()
         elif kind == "server" and self._servers.get(ident) is peer:
             del self._servers[ident]
             self._reported.pop(ident, None)
         elif kind == "client" and self._clients.get(ident) is peer:
             del self._clients[ident]
+        elif kind == "lfd" and self._lfds.get(ident) is peer:
+            del self._lfds[ident]
+            self._sync_recovery()
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         task = asyncio.current_task()
@@ -124,7 +154,7 @@ class RmApp:
         try:
             hello = await read_message_with_timeout(reader, self.config.connect_timeout)
             session = kind, ident, peer = self._register(hello, writer)
-            if kind != "gfd":
+            if kind in {"server", "client"}:
                 await self._send(peer, build_view(ident, self.policy.view()))
             if kind == "server":
                 self._retry_now(ident)
@@ -135,6 +165,13 @@ class RmApp:
                 elif (kind == "server" and message["type"] == MessageType.REPLICA_STATUS
                       and message["source"] == ident):
                     await self._on_status(ident, message["payload"]["ready"])
+                elif kind == "lfd" and message["type"] == MessageType.LAUNCH_RESULT:
+                    payload = message["payload"]
+                    if (message["source"] != ident
+                            or payload["replica_id"] != self._lfd_servers[ident]):
+                        raise ProtocolError("launch result does not match this LFD's replica")
+                    self.logger.event(f"RM: {ident} launch {payload['replica_id']}: {payload['status']} "
+                                      f"pid={payload['pid']} ({payload['detail']})")
                 else:
                     raise ProtocolError(f"unexpected {message['type']} from {ident}")
         except (EOFError, ConnectionError, OSError) as exc:
@@ -168,10 +205,42 @@ class RmApp:
         if unknown:
             raise ProtocolError(f"GFD reported unknown replicas: {', '.join(sorted(unknown))}")
         self.logger.membership(sorted(members), "RM")
+        self._membership_known = True
         before = self.policy.view()
         if self.policy.set_members(members, self._reported):
             await self._publish(before)
         self._sync_due()
+        self._sync_recovery()
+
+    def _sync_recovery(self) -> None:
+        now = asyncio.get_running_loop().time()
+        wanted = set()
+        if self.recovery.enabled and self._gfd is not None and self._membership_known:
+            wanted = {lfd for lfd in self._lfds
+                      if self._lfd_servers[lfd] not in self.policy.members}
+        for lfd in set(self._restart_due) - wanted:
+            del self._restart_due[lfd]
+        for lfd in wanted - self._restart_due.keys():
+            self._restart_due[lfd] = now + self.recovery.restart_delay
+        self._recovery_wake.set()
+
+    async def _recover(self) -> None:
+        loop = asyncio.get_running_loop()
+        while True:
+            self._recovery_wake.clear()
+            for lfd, due in list(self._restart_due.items()):
+                if due > loop.time() or lfd not in self._restart_due:
+                    continue
+                self._restart_due[lfd] = loop.time() + self.recovery.restart_retry
+                replica = self._lfd_servers[lfd]
+                peer = self._lfds.get(lfd)
+                if peer is not None and await self._send(peer, build_rm_command(lfd, "ensure_replica", replica)):
+                    self.logger.event(f"RM: asking {lfd} to ensure replica {replica} is running", "sending")
+            delay = min(self._restart_due.values(), default=loop.time() + 3600) - loop.time()
+            try:
+                await asyncio.wait_for(self._recovery_wake.wait(), max(delay, 0))
+            except TimeoutError:
+                pass
 
     async def _on_status(self, replica_id: str, ready: bool) -> None:
         self._reported[replica_id] = ready

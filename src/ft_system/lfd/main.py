@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import signal
 import math
+from pathlib import Path
 from collections.abc import Sequence
 from dataclasses import replace
 
@@ -13,6 +14,7 @@ from ft_system.common.config import ConfigError, load_config
 from ft_system.common.logging import EventLogger
 from ft_system.lfd.app import HeartbeatEndpoint, LfdApp
 from ft_system.lfd.reporter import GfdReporter
+from ft_system.lfd.supervisor import ReplicaSupervisor
 
 
 def positive_float(value: str) -> float:
@@ -26,6 +28,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run one local fault detector")
     parser.add_argument("--config", required=True, help="Path to shared TOML config")
     parser.add_argument("--lfd-id", required=True, help="LFD ID, for example LFD1")
+    parser.add_argument("--replica-log", type=Path,
+                        help="M5 child stdout log (default logs/m5/<server-id>.log); PID beside it")
     parser.add_argument(
         "--heartbeat-freq",
         type=positive_float,
@@ -46,11 +50,17 @@ async def run(args: argparse.Namespace) -> None:
         server.heartbeat_port,
     )
     logger = EventLogger()
+    supervisor = None
+    if app_config.recovery.enabled:
+        log_path = args.replica_log or Path("logs/m5") / f"{server.replica_id}.log"
+        supervisor = ReplicaSupervisor(lfd_config, server, app_config.rm,
+                                       args.config, log_path, logger)
     reporter = (GfdReporter(lfd_config.lfd_id, server.replica_id, app_config.gfd, logger)
                 if app_config.gfd is not None else None)
     app = LfdApp(lfd_config, endpoint, logger,
                  reporter.set_health if reporter is not None else None)
     report_task = asyncio.create_task(reporter.run()) if reporter is not None else None
+    recovery_task = asyncio.create_task(supervisor.link.run()) if supervisor is not None else None
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -63,6 +73,10 @@ async def run(args: argparse.Namespace) -> None:
     try:
         await stop_event.wait()
     finally:
+        if recovery_task is not None:
+            recovery_task.cancel()
+            await asyncio.gather(recovery_task, return_exceptions=True)
+            await supervisor.close()
         await app.stop()
         await task
         if report_task is not None:

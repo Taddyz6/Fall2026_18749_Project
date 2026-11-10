@@ -50,6 +50,34 @@ python3 scripts/m4_smoke.py
 
 See the [M4 guide](docs/milestone-4-instructions.md) for the 11-window demo sequences, four-computer commands, design, and trade-offs.
 
+## Milestone 5
+
+M5 adds RM-directed **automatic recovery** in active and warm-passive modes. Enable
+`[recovery]` with the M5 configs: the RM asks the replica's local LFD to start its
+server child, then the existing M4 checkpoint/readiness flow restores its state.
+Repeated launch commands do not create duplicate children. Recovered passive
+primaries return as backups; the initial primary can be any replica by starting
+its LFD first. The LFD uses its local interpreter/config, so four-host recovery
+needs no SSH or shared paths.
+
+```bash
+.venv/bin/python scripts/m5_smoke.py
+.venv/bin/python scripts/m5_smoke.py --mode passive --first S2
+```
+
+The smoke test runs the 11 real application processes, injects three successive
+crashes in each mode, checks continuous client progress and state recovery, and
+writes evidence in a fresh directory under `logs/m5-smoke/`. Only LFDs relaunch
+replicas. Each client completes 240 requests in the test; the live demo runs
+indefinitely. The pytest suite repeats both modes with S1, S2 and S3 starting first.
+
+Use the [English four-computer guide](docs/milestone-5-instructions.md) or
+[中文四机演示文档](docs/milestone-5-instructions_zh.md) for exact startup, PID-based
+fault injection, recovery observations and shutdown commands. See the
+[design/contracts](docs/m5-design.md) and [verification report](docs/m5-verification.md).
+M1–M4 configs keep their original manual process lifecycle. M5 retains M4's
+warm-passive checkpoint loss window; RM runtime configuration changes are deferred.
+
 ## Milestone 2 smoke test details
 
 This separate, headless test chooses available loopback ports, launches ten child processes, automatically stops S1 and S2, and checks membership, duplicate replies, client progress, and S3 state. It finishes after each client delivers requests 1–60 exactly once, then cleans up. Per-process logs, the generated config, and `result.json` are saved in `logs/m2-smoke/`; use `--output PATH` to select another directory. The **60-request limit belongs to this test**, not to the live M2 demo or the course requirement.
@@ -68,9 +96,10 @@ python3 scripts/m1_smoke.py
 python3 scripts/m2_smoke.py
 python3 scripts/m3_smoke.py
 python3 scripts/m4_smoke.py
+python3 scripts/m5_smoke.py
 ```
 
-The tests need pytest installed; the two smoke scripts and visual launcher use the Python standard library. Local loopback testing does not establish that the course's four-machine network setup works. See [design notes](docs/DESIGN.md), the [demo checklist](docs/DEMO.md), and the [distributed config example](configs/m2.distributed.example.toml).
+The tests need pytest installed; the smoke scripts and visual launcher use the Python standard library. Local loopback testing does not establish that the course's four-machine network setup works. See [design notes](docs/DESIGN.md), the [demo checklist](docs/DEMO.md), and the milestone-specific distributed deployment guides.
 
 The M1 single-server configuration remains at `configs/local.toml`. Its client still sends automatically by default; the [M1 guide](docs/milestone-1-instructions.md) documents that setup.
 
@@ -78,8 +107,8 @@ The M1 single-server configuration remains at `configs/local.toml`. Its client s
 
 ```text
 src/ft_system/     protocol, replicas, clients, LFDs, GFD, RM
-configs/           M1-M4 local configs and distributed examples
-scripts/           M1-M4 smoke tests, M2 visual launcher
+configs/           M1-M5 local configs and distributed examples
+scripts/           M1-M5 smoke tests, M2 visual launcher
 tests/             unit and integration tests
 docs/              milestone guides, design, and demo checklist
 ```

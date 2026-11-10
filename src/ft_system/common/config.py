@@ -72,6 +72,13 @@ class ReplicationConfig:
 
 
 @dataclass(frozen=True)
+class RecoveryConfig:
+    enabled: bool = False
+    restart_delay: float = 1.0
+    restart_retry: float = 1.0
+
+
+@dataclass(frozen=True)
 class AppConfig:
     servers: Mapping[str, ServerConfig]
     clients: Mapping[str, ClientConfig]
@@ -79,6 +86,7 @@ class AppConfig:
     gfd: GfdConfig | None = None
     replication: ReplicationConfig | None = None
     rm: RmConfig | None = None
+    recovery: RecoveryConfig = RecoveryConfig()
 
     def server(self, replica_id: str) -> ServerConfig:
         try:
@@ -292,10 +300,28 @@ def load_config(path: str | Path) -> AppConfig:
     replication = _parse_replication(data, servers, rm)
     if rm is not None and replication is None:
         raise ConfigError("an [rm] section requires a [replication] section")
+    recovery = RecoveryConfig()
+    if "recovery" in data:
+        raw = _section(data, "recovery")
+        enabled = raw.get("enabled", False)
+        if not isinstance(enabled, bool):
+            raise ConfigError("recovery.enabled must be a boolean")
+        recovery = RecoveryConfig(
+            enabled=enabled,
+            restart_delay=_non_negative_number(raw.get("restart_delay", 1.0), "recovery.restart_delay"),
+            restart_retry=_positive_number(raw.get("restart_retry", 1.0), "recovery.restart_retry"),
+        )
+    if recovery.enabled:
+        if rm is None or gfd is None or replication is None:
+            raise ConfigError("recovery requires [rm], [gfd], and [replication]")
+        owners = [lfd.server_id for lfd in lfds.values()]
+        if set(owners) != set(servers) or len(owners) != len(servers):
+            raise ConfigError("recovery requires exactly one LFD per server")
     return AppConfig(
         gfd=gfd,
         replication=replication,
         rm=rm,
+        recovery=recovery,
         servers=MappingProxyType(servers),
         clients=MappingProxyType(clients),
         lfds=MappingProxyType(lfds),
