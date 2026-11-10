@@ -6,7 +6,7 @@ import signal
 from dataclasses import replace
 
 from ft_system.common.config import ConfigError, load_config
-from ft_system.common.logging import EventLogger
+from ft_system.common.diagnostics import announce, make_logger, on_enter, print_status
 from ft_system.lfd.main import positive_float
 from ft_system.rm.app import RmApp
 
@@ -33,7 +33,9 @@ async def run(args):
     rm = config.rm
     if args.transfer_delay is not None:
         rm = replace(rm, transfer_delay=args.transfer_delay)
-    app = RmApp(rm, config.replication.mode, config.servers, config.clients, EventLogger())
+    logger = make_logger("RM")
+    identity = announce(logger, "RM", config, args.config)
+    app = RmApp(rm, config.replication.mode, config.servers, config.clients, logger, identity)
     stopped = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -41,6 +43,7 @@ async def run(args):
         except NotImplementedError:
             pass
     await app.start()
+    on_enter(lambda: print_status(logger, "RM", app.status_lines()))
     try:
         await stopped.wait()
     finally:

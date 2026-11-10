@@ -106,6 +106,11 @@ class ClientApp:
     async def close(self) -> None:
         await self._drop_connection()
 
+    def status_lines(self) -> list[str]:
+        connected = self._writer is not None and not self._writer.is_closing()
+        return [f"next request_num {self._next_request_num}; {self.endpoint.replica_id} at "
+                f"{self.endpoint.host}:{self.endpoint.port} {'connected' if connected else 'not connected'}"]
+
 
 async def run_automatic(client: ClientApp, interval: float = 1.0) -> None:
     """Send immediately, then wait between attempts until cancelled."""

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Iterable
+import json
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextlib import suppress
 from typing import Any
 
 from ft_system.common.config import ReplicationConfig, RmConfig, ServerConfig
+from ft_system.common.diagnostics import names
 from ft_system.common.logging import EventLogger
 from ft_system.common.protocol import (
     MessageType,
@@ -248,6 +250,17 @@ class ClientListener:
             state = self._state_machine.snapshot()
             return state, {client_id: self._last_num(client_id) for client_id in state}
 
+    def describe(self) -> list[str]:
+        state = self._state_machine.snapshot()
+        last = {client_id: self._last_num(client_id) for client_id in state}
+        lines = [f"role {self.role}, i_am_ready = {int(self.ready)}",
+                 f"my_state = {json.dumps(state, sort_keys=True)}; "
+                 f"last request_num applied = {json.dumps(last, sort_keys=True)}"]
+        if self._backlog or self.high_watermark:
+            lines.append(f"logged requests waiting = {len(self._backlog)}; high_watermark_request_num = "
+                         f"{json.dumps(self.high_watermark, sort_keys=True)}")
+        return lines
+
     async def handle(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
@@ -376,6 +389,7 @@ class ServerApp:
         replication: ReplicationConfig | None = None,
         all_servers: Iterable[ServerConfig] = (),
         rm: RmConfig | None = None,
+        identity: Mapping[str, str] | None = None,
     ) -> None:
         self.config = config
         self.state_machine = DeterministicStateMachine(client_ids)
@@ -395,9 +409,11 @@ class ServerApp:
         )
         self.heartbeat_listener = HeartbeatListener(config.replica_id, logger)
         self.checkpoint_listener = CheckpointListener(config.replica_id, self._receive_checkpoint, logger)
-        self._rm_link = (RmLink(config.replica_id, "server", rm, logger, self._on_rm_message, self._report_status)
+        self._rm_link = (RmLink(config.replica_id, "server", rm, logger, self._on_rm_message,
+                                self._report_status, identity)
                          if rm is not None else None)
         self._view: dict[str, Any] | None = None
+        self._announced_role: tuple[str, str] | None = None
         self.checkpoint_count = 1  # Number of the next checkpoint this replica sends.
         self.received_checkpoint_count = 0
         self._client_server: asyncio.Server | None = None
@@ -532,7 +548,6 @@ class ServerApp:
 
     def _apply_view(self, view: dict[str, Any]) -> None:
         me = self.config.replica_id
-        first = self._view is None
         self._view = view
         self.client_listener.primary_hint = view["primary"]
         self._logger.view(me, view)
@@ -540,17 +555,21 @@ class ServerApp:
             self._spawn(self._close_peer(peer))
         if self._passive:
             role = "primary" if view["primary"] == me else "backup"
-            if role == self.role and not first:
-                return
-            self.client_listener.role = role
-            if role == "primary":
-                # Continue the checkpoint numbering the previous primary started.
-                self.checkpoint_count = max(self.checkpoint_count, self.received_checkpoint_count + 1)
-                self._logger.event(f"{me}: role = primary", "recovered")
-                self._start_checkpointing()
-            else:
-                self._logger.event(f"{me}: role = backup (primary is {view['primary'] or 'not elected'})")
-                self._stop_checkpointing()
+            if role != self.role:
+                self.client_listener.role = role
+                if role == "primary":
+                    # Continue the checkpoint numbering the previous primary started.
+                    self.checkpoint_count = max(self.checkpoint_count, self.received_checkpoint_count + 1)
+                    self._start_checkpointing()
+                else:
+                    self._stop_checkpointing()
+            # Announce the role once a primary exists, and again whenever the primary changes.
+            if view["primary"] is not None and (role, view["primary"]) != self._announced_role:
+                self._announced_role = (role, view["primary"])
+                if role == "primary":
+                    self._logger.event(f"{me}: role = primary", "recovered")
+                else:
+                    self._logger.event(f"{me}: role = backup (primary is {view['primary']})")
         elif self.client_listener.ready:
             self._spawn(self._open_peer_channels())
 
@@ -668,6 +687,31 @@ class ServerApp:
             return
         if await listener.install_checkpoint(payload["state"], payload["last_request_nums"]):
             self.received_checkpoint_count = count
+
+    def status_lines(self) -> list[str]:
+        me = self.config.replica_id
+        lines = self.client_listener.describe()
+        view = self._view
+        if view is not None:
+            primary = f"; primary {view['primary'] or 'none'}" if view["mode"] == "passive" else ""
+            lines.append(f"view {view['view_num']}: members {names(view['members'])}; "
+                         f"ready {names(view['ready'])}{primary}")
+        if self._replication is not None:
+            open_peers = sorted(peer for peer, writer in self._peer_writers.items() if not writer.is_closing())
+            lines.append(f"checkpoint_count: next to send {self.checkpoint_count}, "
+                         f"last received {self.received_checkpoint_count}; "
+                         f"secondary channels open to {names(open_peers)}")
+        if self._rm_link is not None:
+            lines.append(self._rm_link.status())
+            if not self._rm_link.connected:
+                lines.append("hint: this replica cannot become ready until it reaches the RM")
+            elif not self.client_listener.ready and (view is None or me not in view["members"]):
+                lines.append(f"hint: {me} is not a member yet; is its LFD running and receiving heartbeat replies?")
+            elif not self.client_listener.ready and not self._passive:
+                lines.append("waiting for a state transfer; press Enter in the RM window for details")
+            elif not self.client_listener.ready:
+                lines.append(f"waiting for the next checkpoint from primary {view['primary'] or '(none elected)'}")
+        return lines
 
     async def close(self) -> None:
         servers = [

@@ -16,6 +16,8 @@ M4 adds the Replication Manager (RM) and runs **11 processes**: RM, GFD, LFD1–
 | `configs/m4.active.local.toml` / `configs/m4.passive.local.toml` | One computer, loopback addresses |
 | `configs/m4.active.distributed.toml` / `configs/m4.passive.distributed.toml` | Four computers. Replace each `advertised_host` with that computer's current IPv4 address and copy the identical file to all four computers |
 
+For the step-by-step four-computer walkthrough, see the [English guide](milestone-4-distributed-demo.md) or the [Chinese guide](milestone-4-distributed-demo_zh.md). Before a four-laptop run, follow the preflight in [demo-troubleshooting.md](demo-troubleshooting.md): run `python -m ft_system.doctor` on all four laptops and wait for `PASS` on each. During the demo, press Enter in any process window for a status snapshot.
+
 The two files of each pair differ only in `[replication]`. Ports: RM 7300, GFD 7200, client 5201–5203, heartbeat 6201–6203, checkpoint 8201–8203. Open them in each computer's firewall.
 
 `[rm] transfer_delay = 2.0` makes the RM wait two seconds before sending state to a relaunched replica, so its "logged without replying" lines are easy to see. Use `--transfer-delay 0` on `ft_system.rm.main` for normal speed. `[replication] checkpoint_freq` sets the passive checkpoint period, and `--checkpoint-freq` on `ft_system.server.main` overrides it.
@@ -82,7 +84,11 @@ Use the passive config and the same start sequence. The RM prints `RM: primary i
 ```bash
 python3 -m pytest -q
 python3 scripts/m4_smoke.py              # both modes; or --mode active / --mode passive
+python3 scripts/m4_smoke.py --demo-timing # same scenarios with the real timers and one request per second
+python3 scripts/m4_soak.py --cycles 30    # random kills and relaunches under load; prints its seed
 ```
+
+`m4_soak.py` kills replicas at random (sometimes two at once) and relaunches them with random timing, always leaving one ready replica alive. It then checks that no update was lost or repeated in active mode, that replies stay in sequence and backups match the primary in passive mode, and that clients never stall. Re-run a failure with the printed `--seed`.
 
 `m4_smoke.py` runs the 11-process topology on loopback with short timers. It kills and relaunches S2 in both modes, kills S1 in both modes (in passive mode this exercises primary election), and relaunches S1 in passive mode. It checks the RM, replica, and client logs, and saves them to `logs/m4-smoke/<mode>/`. It uses a hard kill, so it also runs on Windows. The pytest suite includes in-process versions of both scenarios (`tests/integration/test_m4_system.py`).
 

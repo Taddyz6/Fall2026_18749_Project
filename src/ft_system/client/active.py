@@ -63,7 +63,7 @@ class ActiveClientApp:
             reader, writer = await open_connection_with_timeout(
                 endpoint.host, endpoint.port, self.connect_timeout)
         except (TimeoutError, ConnectionError, OSError) as exc:
-            self.logger.error(self.client_id, f"{replica} unavailable: {exc}")
+            self.logger.error(self.client_id, f"{replica} unavailable: {str(exc) or type(exc).__name__}")
             return
         finally:
             self._opening.discard(replica)
@@ -86,6 +86,13 @@ class ActiveClientApp:
             return
         self._started = True
         await asyncio.gather(*(self._open_replica(endpoint) for endpoint in self.endpoints))
+
+    def status_lines(self):
+        connected = sorted(self._connections)
+        missing = sorted({e.replica_id for e in self.endpoints} - set(connected))
+        return [f"next request_num {self._next_request_num}; last delivered {self._delivered}",
+                f"connected to {', '.join(connected) or 'no replicas'}"
+                + (f"; not connected to {', '.join(missing)}" if missing else "")]
 
     def apply_view(self, view):
         """Keep connections to the RM's current members, including after transient failures."""

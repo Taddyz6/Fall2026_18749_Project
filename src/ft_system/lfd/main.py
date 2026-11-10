@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 
 from ft_system.common.config import ConfigError, load_config
-from ft_system.common.logging import EventLogger
+from ft_system.common.diagnostics import announce, make_logger, on_enter, print_status
 from ft_system.lfd.app import HeartbeatEndpoint, LfdApp
 from ft_system.lfd.reporter import GfdReporter
 
@@ -45,7 +45,8 @@ async def run(args: argparse.Namespace) -> None:
         server.advertised_host,
         server.heartbeat_port,
     )
-    logger = EventLogger()
+    logger = make_logger(lfd_config.lfd_id)
+    announce(logger, lfd_config.lfd_id, app_config, args.config)
     reporter = (GfdReporter(lfd_config.lfd_id, server.replica_id, app_config.gfd, logger)
                 if app_config.gfd is not None else None)
     app = LfdApp(lfd_config, endpoint, logger,
@@ -60,6 +61,8 @@ async def run(args: argparse.Namespace) -> None:
             pass
 
     task = asyncio.create_task(app.run())
+    on_enter(lambda: print_status(logger, lfd_config.lfd_id, app.status_lines()
+                                  + ([reporter.status()] if reporter is not None else [])))
     try:
         await stop_event.wait()
     finally:

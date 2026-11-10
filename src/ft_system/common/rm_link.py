@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from ft_system.common.config import RmConfig
@@ -31,6 +31,7 @@ class RmLink:
         logger: EventLogger,
         on_message: Callable[[dict[str, Any]], Awaitable[None]],
         on_connected: Callable[[], Awaitable[None]] | None = None,
+        identity: Mapping[str, str] | None = None,
     ) -> None:
         self.component_id = component_id
         self.kind = kind
@@ -38,12 +39,18 @@ class RmLink:
         self.logger = logger
         self.on_message = on_message
         self.on_connected = on_connected
+        self.identity = identity
         self._writer: asyncio.StreamWriter | None = None
         self._lock = asyncio.Lock()
 
     @property
     def connected(self) -> bool:
         return self._writer is not None
+
+    def status(self) -> str:
+        if self.connected:
+            return "RM connected"
+        return f"RM NOT connected (dialing {self.config.advertised_host}:{self.config.port})"
 
     async def send(self, message: dict[str, Any]) -> bool:
         """Send one message if registered; the read loop handles broken connections."""
@@ -65,7 +72,7 @@ class RmLink:
                 reader, writer = await open_connection_with_timeout(
                     self.config.advertised_host, self.config.port, self.config.connect_timeout)
                 async with self._lock:
-                    await write_message(writer, build_hello(self.component_id, self.kind))
+                    await write_message(writer, build_hello(self.component_id, self.kind, self.identity))
                     self._writer = writer
                 self.logger.event(f"{self.component_id}: registered with RM")
                 reported_failure = False

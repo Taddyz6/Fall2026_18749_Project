@@ -4,7 +4,7 @@ from ft_system.common.protocol import MessageType, ProtocolError
 from ft_system.common.rm_link import RmLink
 
 
-def subscribe(client, rm_config, logger):
+def subscribe(client, rm_config, logger, identity=None):
     """Return an RmLink whose ``run()`` keeps ``client`` up to date with each view."""
 
     async def on_message(message):
@@ -13,4 +13,4 @@ def subscribe(client, rm_config, logger):
         logger.view(client.client_id, message["payload"])
         client.apply_view(message["payload"])
 
-    return RmLink(client.client_id, "client", rm_config, logger, on_message)
+    return RmLink(client.client_id, "client", rm_config, logger, on_message, identity=identity)

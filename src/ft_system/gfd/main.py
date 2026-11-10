@@ -6,7 +6,7 @@ import signal
 from dataclasses import replace
 
 from ft_system.common.config import ConfigError, load_config
-from ft_system.common.logging import EventLogger
+from ft_system.common.diagnostics import announce, make_logger, on_enter, print_status
 from ft_system.gfd.app import GfdApp
 from ft_system.lfd.main import positive_float
 
@@ -25,8 +25,10 @@ async def run(args):
     gfd = config.gfd
     if args.heartbeat_freq is not None:
         gfd = replace(gfd, heartbeat_freq=args.heartbeat_freq)
-    app = GfdApp(gfd, {lfd.lfd_id: lfd.server_id for lfd in config.lfds.values()}, EventLogger(),
-                 config.rm)
+    logger = make_logger("GFD")
+    identity = announce(logger, "GFD", config, args.config)
+    app = GfdApp(gfd, {lfd.lfd_id: lfd.server_id for lfd in config.lfds.values()}, logger,
+                 config.rm, identity)
     stopped = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -34,6 +36,7 @@ async def run(args):
         except NotImplementedError:
             pass
     await app.start()
+    on_enter(lambda: print_status(logger, "GFD", app.status_lines()))
     try:
         await stopped.wait()
     finally:

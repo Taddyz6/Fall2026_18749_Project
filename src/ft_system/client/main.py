@@ -8,7 +8,7 @@ from collections.abc import Sequence
 
 from ft_system.client.app import ClientApp, ServerEndpoint, run_automatic, run_interactive
 from ft_system.common.config import ConfigError, load_config
-from ft_system.common.logging import EventLogger
+from ft_system.common.diagnostics import announce, make_logger, on_enter, print_status
 from ft_system.client.active import ActiveClientApp
 from ft_system.client.passive import PassiveClientApp
 from ft_system.client.rm_subscriber import subscribe
@@ -36,13 +36,15 @@ async def run(args: argparse.Namespace) -> None:
             server.replica_id, server.advertised_host, server.client_port
         ))
 
+    logger = make_logger(client_config.client_id)
+    identity = announce(logger, client_config.client_id, app_config, args.config)
     replication = app_config.replication
     if replication is not None and replication.mode == "passive":
         # With an RM the primary comes from its views; otherwise from the config.
         primary_id = None if app_config.rm is not None else replication.primary_id
         client = PassiveClientApp(
             client_config.client_id, endpoints, primary_id,
-            client_config.connect_timeout, client_config.read_timeout, EventLogger(),
+            client_config.connect_timeout, client_config.read_timeout, logger,
         )
     elif len(endpoints) > 1:
         client = ActiveClientApp(
@@ -50,7 +52,7 @@ async def run(args: argparse.Namespace) -> None:
             endpoints,
             client_config.connect_timeout,
             client_config.read_timeout,
-            EventLogger(),
+            logger,
         )
     else:
         client = ClientApp(
@@ -58,13 +60,17 @@ async def run(args: argparse.Namespace) -> None:
             endpoints[0],
             client_config.connect_timeout,
             client_config.read_timeout,
-            EventLogger(),
+            logger,
         )
     if args.count < 0:
         raise ConfigError("count must be non-negative")
-    rm_task = None
+    rm_task = link = None
     if app_config.rm is not None and hasattr(client, "apply_view"):
-        rm_task = asyncio.create_task(subscribe(client, app_config.rm, client.logger).run())
+        link = subscribe(client, app_config.rm, logger, identity)
+        rm_task = asyncio.create_task(link.run())
+    if not args.interactive:  # Interactive clients read commands from the same terminal.
+        on_enter(lambda: print_status(logger, client.client_id, client.status_lines()
+                                      + ([link.status()] if link is not None else [])))
     try:
         if args.interactive:
             await run_interactive(client)

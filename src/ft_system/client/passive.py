@@ -42,6 +42,13 @@ class PassiveClientApp:
     def next_request_num(self):
         return self._next_request_num
 
+    def status_lines(self):
+        connected = self._primary is not None and not self._primary[2].is_closing()
+        return [f"next request_num {self._next_request_num}; primary {self.primary_id or 'unknown'} "
+                f"({'connected' if connected else 'not connected'})",
+                f"idle backup connections: {', '.join(sorted(self._idle)) or 'none'}; "
+                f"members per latest view: {', '.join(sorted(self._members)) or 'none'}"]
+
     def apply_view(self, view):
         members = set(view["members"]) & set(self._endpoints)
         if members != self._members:
@@ -76,20 +83,21 @@ class PassiveClientApp:
                 continue
             self.logger.event(f"{self.client_id}: connected to idle backup {replica}")
 
-    async def _primary_connection(self):
+    async def _primary_connection(self, primary):
+        """Return a connection to ``primary``; the caller chose it before any await."""
         if self._primary is not None:
             replica, reader, writer = self._primary
-            if replica == self.primary_id and not writer.is_closing():
+            if replica == primary and not writer.is_closing():
                 return reader, writer
             self._primary = None
             if replica in self._members and not writer.is_closing():
                 self._idle[replica] = (reader, writer)  # A demoted primary becomes an idle backup.
             else:
                 await close_writer(writer)
-        connection = self._idle.pop(self.primary_id, None)
+        connection = self._idle.pop(primary, None)
         if connection is None or connection[1].is_closing():
-            connection = await self._open(self.primary_id)
-        self._primary = (self.primary_id, *connection)
+            connection = await self._open(primary)
+        self._primary = (primary, *connection)
         return connection
 
     async def _drop_primary(self):
@@ -109,18 +117,23 @@ class PassiveClientApp:
                     await asyncio.wait_for(self._primary_known.wait(), self.connect_timeout)
                 if self.primary_id is None:
                     raise ConnectionError("no primary known yet; waiting for the RM view")
-            reader, writer = await self._primary_connection()
+            # The view may change during the awaits below; this request goes to one primary.
             primary = self.primary_id
-            request = build_client_request(self.client_id, primary, self._next_request_num)
-            self.logger.sending(request, "request")
+            number = self._next_request_num
+            request = build_client_request(self.client_id, primary, number)
             try:
+                reader, writer = await self._primary_connection(primary)
+                self.logger.sending(request, "request")
                 await write_message(writer, request)
                 reply = await read_message_with_timeout(reader, self.read_timeout)
                 if reply["type"] == MessageType.ERROR and reply["payload"]["code"] == "not_primary":
                     raise ProtocolError(f"{primary} is not the primary (it reports {reply['payload']['detail']})")
                 ClientApp._validate_reply(reply, request)
-            except (EOFError, TimeoutError, ProtocolError, ConnectionError, OSError):
+            except (EOFError, TimeoutError, ProtocolError, ConnectionError, OSError) as exc:
                 await self._drop_primary()
+                self.logger.event(f"{self.client_id}: no reply from primary {primary} for request_num {number} "
+                                  f"({str(exc) or type(exc).__name__}); will retry with the RM's current primary",
+                                  "failed")
                 raise
             self.logger.received(reply, "reply")
             self._next_request_num += 1

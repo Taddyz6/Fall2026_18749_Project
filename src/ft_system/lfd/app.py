@@ -181,3 +181,12 @@ class LfdApp:
     async def stop(self) -> None:
         self._stop_event.set()
         await self._drop_connection()
+
+    def status_lines(self) -> list[str]:
+        target = f"{self.endpoint.replica_id} at {self.endpoint.host}:{self.endpoint.port}"
+        lines = [f"{self.config.lfd_id} -> {target}: {'healthy' if self._healthy else 'NOT healthy'}; "
+                 f"next heartbeat_count {self._heartbeat_count}; heartbeat_freq {self.config.heartbeat_freq} s"]
+        if not self._healthy:
+            lines.append(f"hint: is {self.endpoint.replica_id} running on this computer, and is "
+                         f"{self.endpoint.host} still this computer's address?")
+        return lines

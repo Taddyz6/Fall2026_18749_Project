@@ -16,6 +16,7 @@ class GfdReporter:
         self.config = config
         self.logger = logger
         self.healthy = False
+        self.connected = False
         self._changed = asyncio.Event()
 
     def set_health(self, healthy: bool) -> None:
@@ -40,6 +41,7 @@ class GfdReporter:
 
                 self._changed.clear()
                 await send(build_membership(self.lfd_id, self.replica_id, self.healthy, register=True))
+                self.connected = True
                 self.logger.event(f"{self.lfd_id}: registered with GFD")
 
                 async def report_changes():
@@ -74,5 +76,11 @@ class GfdReporter:
             except (EOFError, TimeoutError, ProtocolError, ConnectionError, OSError) as exc:
                 self.logger.error(self.lfd_id, f"GFD connection: {str(exc) or type(exc).__name__}")
             finally:
+                self.connected = False
                 await close_writer(writer)
             await asyncio.sleep(0.5)
+
+    def status(self) -> str:
+        if self.connected:
+            return "GFD connected"
+        return f"GFD NOT connected (dialing {self.config.advertised_host}:{self.config.port})"

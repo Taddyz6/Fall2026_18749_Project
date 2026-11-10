@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from ft_system.common.config import RmConfig
+from ft_system.common.diagnostics import names
 from ft_system.common.logging import EventLogger
 from ft_system.common.protocol import (
     MessageType, ProtocolError, build_rm_command, build_view,
@@ -34,9 +35,11 @@ class RmApp:
         server_ids: Iterable[str],
         client_ids: Iterable[str],
         logger: EventLogger,
+        identity: Mapping[str, str] | None = None,
     ) -> None:
         self.config = config
         self.logger = logger
+        self.identity = dict(identity) if identity else None
         self.policy = ReplicationPolicy(mode)
         self._server_ids = frozenset(server_ids)
         self._client_ids = frozenset(client_ids)
@@ -48,6 +51,8 @@ class RmApp:
         self._due: dict[tuple[str, str | None], float] = {}
         self._issued: set[tuple[str, str | None]] = set()
         self._waiting: set[tuple[str, str | None]] = set()
+        self._attempts: dict[tuple[str, str | None], int] = {}
+        self._mismatches: dict[str, str] = {}
         self._wake = asyncio.Event()
         self._tasks: set[asyncio.Task] = set()
         self._server: asyncio.Server | None = None
@@ -106,7 +111,19 @@ class RmApp:
             # A restarted component replaces its stale session.
             previous.writer.close()
         self.logger.event(f"RM: {ident} registered")
+        self._check_identity(ident, hello["payload"])
         return kind, ident, peer
+
+    def _check_identity(self, ident: str, payload: dict[str, Any]) -> None:
+        self._mismatches.pop(ident, None)
+        theirs = {key: payload[key] for key in ("build", "config") if key in payload}
+        if self.identity is None or not theirs or theirs == self.identity:
+            return
+        problem = (f"runs build {theirs.get('build', '?')} with config {theirs.get('config', '?')}; "
+                   f"the RM runs build {self.identity['build']} with config {self.identity['config']}")
+        self._mismatches[ident] = problem
+        self.logger.error("RM", f"MISMATCH: {ident} {problem}. Use the same commit and the same "
+                                "config file on every computer, then relaunch it")
 
     def _unregister(self, kind: str, ident: str, peer: _Peer) -> None:
         if kind == "gfd" and self._gfd is peer:
@@ -209,6 +226,7 @@ class RmApp:
             del self._due[key]
             self._issued.discard(key)
             self._waiting.discard(key)
+            self._attempts.pop(key, None)
         for key in wanted - set(self._due):
             # Delaying a transfer keeps the new replica's not-ready logging visible in demos.
             self._due[key] = now + (self.config.transfer_delay if key[1] is not None else 0)
@@ -257,3 +275,39 @@ class RmApp:
         if await self._send(peer, message):
             self.logger.event(f"RM: {text}" + (" (retry)" if key in self._issued else ""), "sending")
             self._issued.add(key)
+            self._attempts[key] = self._attempts.get(key, 0) + 1
+
+    # Diagnostics ------------------------------------------------------------
+
+    def status_lines(self) -> list[str]:
+        """Summarize the RM's view of the system, with hints for common demo faults."""
+
+        view = self.policy.view()
+        rm_address = f"{self.config.advertised_host}:{self.config.port}"
+        primary = f"; primary {view['primary'] or 'none'}" if view["mode"] == "passive" else ""
+        lines = [
+            f"mode {view['mode']}, view {view['view_num']}: members {names(view['members'])}; "
+            f"ready {names(view['ready'])}{primary}",
+            f"GFD {'connected' if self._gfd else 'NOT connected'}; replicas registered: "
+            f"{names(sorted(self._servers))}; clients registered: {names(sorted(self._clients))}",
+        ]
+        if self._gfd is None:
+            lines.append(f"hint: membership cannot change until the GFD connects to the RM at {rm_address}")
+        for member in self.policy.members:
+            if member not in self._servers:
+                lines.append(f"hint: {member} is alive (its LFD heartbeats it) but never registered with the RM; "
+                             f"check that {member}'s computer can reach {rm_address}")
+        for replica in sorted(set(self._servers) - set(self.policy.members)):
+            lines.append(f"hint: {replica} is running but is not a member; is its LFD running, "
+                         f"and does the LFD's console show heartbeat replies from {replica}?")
+        now = asyncio.get_running_loop().time()
+        for (target, donor), due in sorted(self._due.items(), key=lambda item: item[0][0]):
+            sent = self._attempts.get((target, donor), 0)
+            action = "set_ready" if donor is None else f"state from {donor}"
+            lines.append(f"{target} waiting for {action}: sent {sent} time(s); next attempt in {max(due - now, 0):.1f} s")
+            if donor is not None and sent >= 2:
+                lines.append(f"hint: look for 'checkpoint to {target}' errors in {donor}'s console; {target}'s "
+                             f"checkpoint port may be blocked, or {target}'s log is ahead of {donor}")
+        for ident, problem in sorted(self._mismatches.items()):
+            lines.append(f"MISMATCH {ident} {problem}")
+        return lines

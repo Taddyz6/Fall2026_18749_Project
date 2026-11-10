@@ -176,6 +176,10 @@ def validate_message(message: Mapping[str, Any]) -> dict[str, Any]:
         _require_rm_destination(validated)
         if _require_string(payload.get("kind"), "kind") not in RM_PEER_KINDS:
             raise ProtocolError("hello kind must be gfd, server, or client")
+        # Optional code and config fingerprints let the RM spot mismatched computers.
+        for field in ("build", "config"):
+            if field in payload:
+                payload[field] = _require_string(payload[field], field)
     elif message_type is MessageType.MEMBERSHIP_REPORT:
         _require_rm_destination(validated)
         payload["members"] = _require_id_list(payload.get("members"), "members")
@@ -330,10 +334,10 @@ def build_checkpoint(source: str, destination: str, state: Mapping[str, int],
     })
 
 
-def build_hello(source: str, kind: str) -> dict[str, Any]:
+def build_hello(source: str, kind: str, identity: Mapping[str, str] | None = None) -> dict[str, Any]:
     return validate_message({
         "version": PROTOCOL_VERSION, "type": MessageType.HELLO,
-        "source": source, "destination": RM_ID, "payload": {"kind": kind},
+        "source": source, "destination": RM_ID, "payload": {"kind": kind, **(identity or {})},
     })
 
 

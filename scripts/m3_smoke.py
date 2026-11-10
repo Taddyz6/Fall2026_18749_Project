@@ -39,7 +39,7 @@ def main():
     config = config.replace("read_timeout = 1.0", "read_timeout = 0.25")
     config_path = output / "deployment.toml"
     config_path.write_text(config)
-    environment = os.environ | {"PYTHONPATH": str(ROOT / "src"), "PYTHONUNBUFFERED": "1"}
+    environment = os.environ | {"PYTHONPATH": str(ROOT / "src"), "PYTHONUNBUFFERED": "1", "FT_LOG_DIR": "off"}
     processes, handles = {}, []
 
     def launch(name, component, *extra):

@@ -26,8 +26,10 @@ def reserve_ports(count):
 
 
 class Run:
-    def __init__(self, mode, output):
+    def __init__(self, mode, output, demo_timing=False):
         self.mode, self.output = mode, output
+        # demo_timing keeps the config's real timers and one request per second, as in the live demo.
+        self.interval = "1" if demo_timing else "0.05"
         output.mkdir(parents=True, exist_ok=True)
         config = (ROOT / "configs" / f"m4.{mode}.local.toml").read_text()
         for old, new in zip(CONFIG_PORTS, reserve_ports(len(CONFIG_PORTS))):
@@ -36,10 +38,13 @@ class Run:
                          ("heartbeat_freq = 1.0", "heartbeat_freq = 0.1"),
                          ("checkpoint_freq = 1.0", "checkpoint_freq = 0.1"),
                          ("read_timeout = 1.0", "read_timeout = 0.3")]:
-            config = config.replace(old, new)
+            if not demo_timing:
+                config = config.replace(old, new)
         self.config_path = output / "deployment.toml"
         self.config_path.write_text(config)
-        self.environment = os.environ | {"PYTHONPATH": str(ROOT / "src"), "PYTHONUNBUFFERED": "1"}
+        # Output is already captured per process, so skip the logs/console copies.
+        self.environment = os.environ | {"PYTHONPATH": str(ROOT / "src"), "PYTHONUNBUFFERED": "1",
+                                         "FT_LOG_DIR": "off"}
         self.processes, self.handles = {}, []
 
     def launch(self, name, component, *extra, log=None):
@@ -47,7 +52,7 @@ class Run:
         self.handles.append(handle)
         self.processes[name] = subprocess.Popen(
             [sys.executable, "-m", f"ft_system.{component}.main", "--config", str(self.config_path), *extra],
-            cwd=ROOT, env=self.environment, stdout=handle, stderr=subprocess.STDOUT,
+            cwd=ROOT, env=self.environment, stdin=subprocess.DEVNULL, stdout=handle, stderr=subprocess.STDOUT,
         )
 
     def crash(self, name):
@@ -58,7 +63,7 @@ class Run:
     def log(self, name):
         return (self.output / f"{name}.log").read_text()
 
-    def wait_for(self, predicate, label, timeout=15):
+    def wait_for(self, predicate, label, timeout=30):
         deadline = time.monotonic() + timeout
         while not predicate():
             if time.monotonic() > deadline:
@@ -88,7 +93,7 @@ class Run:
         for replica in ("S1", "S2", "S3"):
             self.wait_for(lambda: "i_am_ready = 1" in self.log(replica), f"{replica} ready")
         for i in range(1, 4):
-            self.launch(f"C{i}", "client", "--client-id", f"C{i}", "--interval", "0.05")
+            self.launch(f"C{i}", "client", "--client-id", f"C{i}", "--interval", self.interval)
         self.wait_progress("fault-free traffic")
 
     def close(self):
@@ -159,9 +164,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=["active", "passive", "both"], default="both")
     parser.add_argument("--output", type=Path, default=ROOT / "logs" / "m4-smoke")
+    parser.add_argument("--demo-timing", action="store_true",
+                        help="use the config's real timers and one request per second (several minutes)")
     args = parser.parse_args()
     for mode in (["active", "passive"] if args.mode == "both" else [args.mode]):
-        run = Run(mode, args.output.resolve() / mode)
+        run = Run(mode, args.output.resolve() / mode, args.demo_timing)
         try:
             (active_scenario if mode == "active" else passive_scenario)(run)
         finally:

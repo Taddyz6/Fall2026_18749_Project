@@ -49,6 +49,7 @@ def main():
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT / "src")
     env["PYTHONUNBUFFERED"] = "1"
+    env["FT_LOG_DIR"] = "off"
 
     def record(text):
         event = {"elapsed_seconds": round(time.monotonic() - started, 3), "event": text}

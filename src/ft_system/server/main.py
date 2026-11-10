@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 
 from ft_system.common.config import ConfigError, load_config
-from ft_system.common.logging import EventLogger
+from ft_system.common.diagnostics import announce, make_logger, on_enter, print_status
 from ft_system.lfd.main import positive_float
 from ft_system.server.app import ServerApp
 
@@ -31,8 +31,10 @@ async def run(args: argparse.Namespace) -> None:
         if replication is None:
             raise ConfigError("--checkpoint-freq requires a replication configuration")
         replication = replace(replication, checkpoint_freq=args.checkpoint_freq)
-    app = ServerApp(server_config, tuple(app_config.clients), EventLogger(),
-                    replication, tuple(app_config.servers.values()), app_config.rm)
+    logger = make_logger(args.server_id)
+    identity = announce(logger, args.server_id, app_config, args.config)
+    app = ServerApp(server_config, tuple(app_config.clients), logger,
+                    replication, tuple(app_config.servers.values()), app_config.rm, identity)
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -42,6 +44,7 @@ async def run(args: argparse.Namespace) -> None:
             pass
 
     await app.start()
+    on_enter(lambda: print_status(logger, args.server_id, app.status_lines()))
     try:
         await stop_event.wait()
     finally:

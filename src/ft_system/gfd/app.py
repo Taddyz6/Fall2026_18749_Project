@@ -3,6 +3,7 @@
 import asyncio
 
 from ft_system.common.config import GfdConfig, RmConfig
+from ft_system.common.diagnostics import names
 from ft_system.common.logging import EventLogger, format_members
 from ft_system.common.protocol import (
     MessageType, ProtocolError, build_heartbeat, build_membership_report,
@@ -15,7 +16,7 @@ from ft_system.common.transport import (
 
 class GfdApp:
     def __init__(self, config: GfdConfig, lfd_servers: dict[str, str], logger: EventLogger,
-                 rm: RmConfig | None = None):
+                 rm: RmConfig | None = None, identity: dict[str, str] | None = None):
         self.config = config
         self.lfd_servers = lfd_servers
         self.logger = logger
@@ -25,7 +26,7 @@ class GfdApp:
         self._tasks: set[asyncio.Task] = set()
         self._server = None
         self._rm = RmLink("GFD", "gfd", rm, logger, self._unexpected_rm_message,
-                          self._notify_rm) if rm is not None else None
+                          self._notify_rm, identity) if rm is not None else None
         self._rm_changed = asyncio.Event()
         self._rm_tasks: list[asyncio.Task] = []
 
@@ -68,6 +69,23 @@ class GfdApp:
 
     async def _unexpected_rm_message(self, message: dict) -> None:
         raise ProtocolError(f"unexpected {message['type']} from RM")
+
+    def status_lines(self) -> list[str]:
+        registered = sorted(self._sessions)
+        missing = sorted(set(self.lfd_servers) - set(self._sessions))
+        lines = [format_members(self.membership),
+                 f"LFDs registered: {names(registered)}" + (f"; NOT registered: {names(missing)}" if missing else "")]
+        if self._rm is not None:
+            lines.append(self._rm.status())
+        address = f"{self.config.advertised_host}:{self.config.port}"
+        for lfd in missing:
+            lines.append(f"hint: {lfd} is not connected; is it running with the same config, "
+                         f"and can its computer reach {address}?")
+        for lfd in registered:
+            replica = self.lfd_servers[lfd]
+            if replica not in self._members:
+                lines.append(f"{replica} is not a member: {lfd} has no successful heartbeat yet (is {replica} running?)")
+        return lines
 
     def _validate_report(self, message: dict, lfd_id: str) -> None:
         if (message["source"] != lfd_id or message["destination"] != "GFD"

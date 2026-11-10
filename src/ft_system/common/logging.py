@@ -50,13 +50,22 @@ class EventLogger:
         stream: TextIO = sys.stdout,
         clock: Callable[[], str] = default_clock,
         use_color: bool | None = None,
+        copy: TextIO | None = None,
     ) -> None:
         self._stream = stream
         self._clock = clock
         self._use_color = stream.isatty() if use_color is None else use_color
+        # Optional plain-text copy of every line, kept for after-the-fact debugging.
+        self._copy = copy
+        self.copy_path: str | None = None
 
     def _write(self, text: str, color: str | None = None) -> None:
         line = f"[{self._clock()}] {text}"
+        if self._copy is not None:
+            try:
+                print(line, file=self._copy, flush=True)
+            except (OSError, ValueError):
+                self._copy = None
         if self._use_color and color is not None:
             line = f"{_COLORS[color]}{line}{_RESET}"
         print(line, file=self._stream, flush=True)

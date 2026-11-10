@@ -11,6 +11,7 @@ from ft_system.client.rm_subscriber import subscribe
 from ft_system.common.config import GfdConfig, ReplicationConfig, RmConfig, ServerConfig
 from ft_system.common.logging import EventLogger
 from ft_system.common.protocol import ProtocolError
+from ft_system.common.rm_link import RmLink
 from ft_system.gfd.app import GfdApp
 from ft_system.lfd.reporter import GfdReporter
 from ft_system.rm.app import RmApp
@@ -117,6 +118,10 @@ async def test_active_relaunched_replica_logs_then_catches_up_without_divergence
         assert "RM: 3 members: S1, S2, S3" in cluster.log("RM")
         assert "RM: S1 is the first replica" in cluster.log("RM")
         assert "S2 received checkpoint" in cluster.log("S2")
+        status = cluster.rm.status_lines()
+        assert "replicas registered: S1, S2, S3" in status[1]
+        assert not any(line.startswith("hint:") for line in status)
+        assert "role active, i_am_ready = 1" in cluster.replicas["S2"].status_lines()[0]
 
         clients = [cluster.add_client(ActiveClientApp, client_id, .5, 1.0) for client_id in CLIENTS]
         for _ in range(5):
@@ -137,6 +142,8 @@ async def test_active_relaunched_replica_logs_then_catches_up_without_divergence
 
         drivers = [asyncio.create_task(drive(client)) for client in clients]
         await cluster.launch("S2", "S2-relaunch")
+        await eventually(lambda: any("S2 waiting for state from S1" in line
+                                     for line in cluster.rm.status_lines()), timeout=2)
         await eventually(lambda: "S2" in cluster.rm.policy.ready, timeout=5)
         await eventually(lambda: "Sending <C1, S2," in cluster.log("S2-relaunch"), timeout=2)
         stop.set()
@@ -316,6 +323,29 @@ async def test_active_cancels_unneeded_connection_attempts(monkeypatch, action):
         await server.close()
 
 
+async def test_rm_flags_a_component_running_different_code_or_config():
+    stream = io.StringIO()
+    rm = RmApp(RmConfig("127.0.0.1", "127.0.0.1", 0), "active", REPLICAS, CLIENTS,
+               EventLogger(stream=stream, use_color=False), {"build": "abc1234", "config": "11111111"})
+    await rm.start()
+
+    async def ignore(message):
+        pass
+
+    link = RmLink("S2", "server", RmConfig("127.0.0.1", "127.0.0.1", rm.bound_port),
+                  EventLogger(stream=io.StringIO(), use_color=False), ignore,
+                  identity={"build": "abc1234", "config": "22222222"})
+    task = asyncio.create_task(link.run())
+    try:
+        await eventually(lambda: "MISMATCH: S2 runs build abc1234 with config 22222222" in stream.getvalue())
+        assert any(line.startswith("MISMATCH S2") for line in rm.status_lines())
+        assert any("S2 is running but is not a member" in line for line in rm.status_lines())
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await rm.close()
+
+
 async def test_passive_primary_failover_and_relaunched_replicas_return_as_backups():
     cluster = Cluster("passive")
     await cluster.start()
@@ -357,3 +387,32 @@ async def test_passive_primary_failover_and_relaunched_replicas_return_as_backup
         assert cluster.rm.policy.primary == "S2"
     finally:
         await cluster.close()
+
+
+async def test_passive_request_keeps_its_primary_when_the_view_changes_while_connecting():
+    logger = EventLogger(stream=io.StringIO(), use_color=False)
+    servers = [ServerApp(ServerConfig(replica, "127.0.0.1", "127.0.0.1", 0, 0), CLIENTS, logger)
+               for replica in ("S1", "S2")]
+    for server in servers:
+        await server.start()
+    endpoints = [ServerEndpoint(s.config.replica_id, "127.0.0.1", s.bound_client_port) for s in servers]
+    client = PassiveClientApp("C1", endpoints, "S1", .5, .5, logger)
+    client._sync_needed = False  # No idle connections, so the primary connection is opened on demand.
+    open_connection = client._open
+
+    async def view_arrives_during_open(replica):
+        connection = await open_connection(replica)
+        if replica == "S1":
+            client.apply_view({"view_num": 2, "mode": "passive", "members": ["S1", "S2"],
+                               "ready": ["S1", "S2"], "primary": "S2"})
+        return connection
+
+    client._open = view_arrives_during_open
+    try:
+        first = await client.send_increment()
+        assert first["replica_id"] == "S1" and client._primary[0] == "S1"
+        second = await client.send_increment()
+        assert second["replica_id"] == "S2" and second["request_num"] == 2
+    finally:
+        await client.close()
+        await asyncio.gather(*(server.close() for server in servers))

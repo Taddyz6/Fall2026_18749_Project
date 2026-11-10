@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import tomllib
 import math
 from collections.abc import Mapping
@@ -79,6 +81,9 @@ class AppConfig:
     gfd: GfdConfig | None = None
     replication: ReplicationConfig | None = None
     rm: RmConfig | None = None
+    # Short hash of the parsed settings: equal on every computer that loaded the same
+    # content, regardless of comments, key order, or line endings.
+    fingerprint: str = ""
 
     def server(self, replica_id: str) -> ServerConfig:
         try:
@@ -292,6 +297,7 @@ def load_config(path: str | Path) -> AppConfig:
     replication = _parse_replication(data, servers, rm)
     if rm is not None and replication is None:
         raise ConfigError("an [rm] section requires a [replication] section")
+    canonical = json.dumps(data, sort_keys=True, separators=(",", ":"), default=str)
     return AppConfig(
         gfd=gfd,
         replication=replication,
@@ -299,6 +305,7 @@ def load_config(path: str | Path) -> AppConfig:
         servers=MappingProxyType(servers),
         clients=MappingProxyType(clients),
         lfds=MappingProxyType(lfds),
+        fingerprint=hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:8],
     )
 
 
