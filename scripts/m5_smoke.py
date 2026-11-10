@@ -43,24 +43,27 @@ def process_alive(pid):
 
 
 class Run:
-    def __init__(self, mode, output, first="S1"):
+    def __init__(self, mode, output, first="S1", *, demo_timing=False):
         if os.name != "posix":
             raise RuntimeError("Run the M5 process smoke test on macOS, Linux, or WSL")
         self.mode, self.first, self.output = mode, first, Path(output).resolve()
+        self.demo_timing = demo_timing
+        self.requests = 1200 if demo_timing else REQUESTS
         # A fresh directory prevents old logs from satisfying current assertions.
         self.output.mkdir(parents=True, exist_ok=False)
         config = (ROOT / "configs" / f"m5.{mode}.local.toml").read_text()
         self.ports = free_ports(len(CONFIG_PORTS))
         for old, new in zip(CONFIG_PORTS, self.ports):
             config = config.replace(f"= {old}\n", f"= {new}\n")
-        for old, new in [("transfer_delay = 2.0", "transfer_delay = 0.2"),
-                         ("restart_delay = 1.0", "restart_delay = 0.5"),
-                         ("restart_retry = 1.0", "restart_retry = 0.2"),
-                         ("heartbeat_freq = 1.0", "heartbeat_freq = 0.05"),
-                         ("checkpoint_freq = 1.0", "checkpoint_freq = 0.05"),
-                         ("connect_timeout = 1.0", "connect_timeout = 0.2"),
-                         ("read_timeout = 1.0", "read_timeout = 0.3")]:
-            config = config.replace(old, new)
+        if not demo_timing:
+            for old, new in [("transfer_delay = 2.0", "transfer_delay = 0.2"),
+                             ("restart_delay = 1.0", "restart_delay = 0.5"),
+                             ("restart_retry = 1.0", "restart_retry = 0.2"),
+                             ("heartbeat_freq = 1.0", "heartbeat_freq = 0.05"),
+                             ("checkpoint_freq = 1.0", "checkpoint_freq = 0.05"),
+                             ("connect_timeout = 1.0", "connect_timeout = 0.2"),
+                             ("read_timeout = 1.0", "read_timeout = 0.3")]:
+                config = config.replace(old, new)
         self.config_path = self.output / "deployment.toml"
         self.config_path.write_text(config, encoding="utf-8")
         self.environment = os.environ | {"PYTHONPATH": str(ROOT / "src"), "PYTHONUNBUFFERED": "1"}
@@ -134,7 +137,7 @@ class Run:
             assert self.primary() == self.first
         for client in CLIENTS:
             self.launch(client, "client", "--client-id", client, "--interval", "0.025",
-                        "--count", str(REQUESTS))
+                        "--count", str(self.requests))
         self.progress({c: 0 for c in CLIENTS}, 5)
 
     def crash_and_recover(self, replica):
@@ -147,7 +150,7 @@ class Run:
         os.kill(old_pid, signal.SIGKILL if os.name == "posix" else signal.SIGTERM)
         rm_log = lambda: self.log("RM")[offsets["RM"]:]
         self.wait_for(lambda: "RM: 2 members" in rm_log(), f"{replica} removal")
-        # With restart_delay=0.5, all clients must progress while the replica is absent.
+        # All clients must progress during the restart delay, before a new process exists.
         self.progress(self.counts(), 1)
         assert self.pid(replica) in (None, old_pid), "progress must occur before the replacement starts"
         self.wait_for(lambda: self.pid(replica) not in (None, old_pid), f"{replica} auto-relaunch")
@@ -180,20 +183,21 @@ class Run:
                             "primary": self.primary()})
 
     def state(self, replica):
-        snapshots = re.findall(rf"(?:my_state_{replica} = |received checkpoint <my_state = )(\{{[^\n]*?\}})",
+        snapshots = re.findall(rf"(?:my_state_{replica} = |installed checkpoint <my_state = )(\{{[^\n]*?\}})",
                                self.log(replica))
         return json.loads(snapshots[-1]) if snapshots else None
 
     def verify_final(self):
-        self.wait_for(lambda: all(self.processes[c].poll() == 0 for c in CLIENTS), "clients finish workload", 25)
+        self.wait_for(lambda: all(self.processes[c].poll() == 0 for c in CLIENTS),
+                      "clients finish workload", max(25, self.requests * .05))
         for client in CLIENTS:
             replies = self.replies(client)
-            assert [n for n, _ in replies] == list(range(1, REQUESTS + 1)), client
+            assert [n for n, _ in replies] == list(range(1, self.requests + 1)), client
             assert "divergence" not in self.log(client)
             if self.mode == "active":
                 assert all(n == value for n, value in replies)
                 assert "Discarded duplicate reply" in self.log(client)
-        expected = {client: REQUESTS for client in CLIENTS}
+        expected = {client: self.requests for client in CLIENTS}
         if self.mode == "active":
             self.wait_for(lambda: all(self.state(r) == expected for r in REPLICAS), "final active state consistency")
         else:
@@ -206,6 +210,7 @@ class Run:
             gaps[client] = max((b - a).total_seconds() for a, b in zip(times, times[1:]))
             assert gaps[client] < 5, f"{client} stalled for {gaps[client]} seconds"
         return {"mode": self.mode, "initial_replica": self.first, "status": "passed",
+                "timing_profile": "demo" if self.demo_timing else "accelerated",
                 "rounds": self.rounds, "replies": self.counts(), "max_reply_gap_seconds": gaps,
                 "final_states": {r: self.state(r) for r in REPLICAS}}
 
@@ -253,11 +258,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("active", "passive", "both"), default="both")
     parser.add_argument("--first", choices=REPLICAS, default="S1", help="Initial primary in passive mode")
+    parser.add_argument("--demo-timing", action="store_true",
+                        help="Keep the demo config's periods/timeouts; run 1200 requests per client")
     parser.add_argument("--output", type=Path, default=ROOT / "logs/m5-smoke")
     args = parser.parse_args()
     output = args.output.resolve() / datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     for mode in (("active", "passive") if args.mode == "both" else (args.mode,)):
-        run = Run(mode, output / mode, args.first)
+        run = Run(mode, output / mode, args.first, demo_timing=args.demo_timing)
         result = {"mode": mode, "status": "failed"}
         try:
             result = scenario(run)

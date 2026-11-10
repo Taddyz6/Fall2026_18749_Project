@@ -141,6 +141,10 @@ class EventLogger:
         self._write(f"{destination} received checkpoint <my_state = {json.dumps(dict(state), sort_keys=True)}, "
                     f"checkpoint_count = {count}> from {source}", "received")
 
+    def checkpoint_installed(self, destination: str, source: str, state: Mapping[str, int], count: int) -> None:
+        self._write(f"{destination} installed checkpoint <my_state = {json.dumps(dict(state), sort_keys=True)}, "
+                    f"checkpoint_count = {count}> from {source}", "ready")
+
     def readiness(self, replica_id: str, ready: bool, reason: str) -> None:
         self._write(f"{replica_id}: i_am_ready = {int(ready)} ({reason})", "ready" if ready else "not_ready")
 

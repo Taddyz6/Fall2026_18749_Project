@@ -115,6 +115,8 @@ Then start each client in a separate terminal on **A**:
 Clients run indefinitely. Active requests go to all replicas; each client delivers
 one reply and discards duplicates. The recovered server's log is appended to the
 same file so its `tail` window follows successive incarnations.
+Use distinct paths for the config, server log, adjacent `.pid` file and `.pid.tmp`
+file; the LFD rejects directly repeated paths before launching.
 
 ## Active fault sequence
 
@@ -148,6 +150,9 @@ For every recovery, observe this order:
    no client should print `replica state divergence`.
 
 Wait for **readiness**, not just `RM: 3 members`, before injecting the next crash.
+For state evidence, use `installed checkpoint` and `my_state_S2` lines. A
+`received checkpoint` line alone does not prove installation: a late checkpoint
+can be received and ignored after the replica is already ready.
 
 ## Passive fault sequence
 
@@ -209,11 +214,14 @@ the LFD needs to run its cleanup. Logs remain available for review.
 .venv/bin/python -m pytest -q
 .venv/bin/python scripts/m5_smoke.py
 .venv/bin/python scripts/m5_smoke.py --mode passive --first S2
+.venv/bin/python scripts/m5_smoke.py --demo-timing
 ```
 
 The smoke runner allocates loopback ports, launches all 11 application processes,
 and injects real crashes. Only the LFDs launch the server children; the harness
-never relaunches them. Each client completes 240 requests. It checks membership,
+never relaunches them. By default, it shortens timers and each client completes
+240 requests. `--demo-timing` preserves the demo config's periods/timeouts and
+uses 1200 requests per client to cover the longer recovery windows. It checks membership,
 readiness, roles, checkpoints, ordered client progress, active consistency and
 cleanup. Output goes into a fresh timestamped directory under `logs/m5-smoke/`,
 with configs, process logs and per-mode `result.json` files. pytest also runs both

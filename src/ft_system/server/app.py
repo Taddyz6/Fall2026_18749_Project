@@ -519,14 +519,18 @@ class ServerApp:
                 self.config.replica_id, self.client_listener.ready, self.received_checkpoint_count))
 
     async def _on_rm_message(self, message: dict[str, Any]) -> None:
+        if message["source"] != "RM" or message["destination"] != self.config.replica_id:
+            raise ProtocolError("expected RM control message addressed to this replica")
         if message["type"] == MessageType.VIEW:
             self._apply_view(message["payload"])
         elif message["type"] == MessageType.RM_COMMAND:
             if message["payload"]["command"] == "set_ready":
                 if not await self.client_listener.mark_ready():
                     await self._report_status()
-            else:
+            elif message["payload"]["command"] == "transfer_state":
                 self._spawn(self._transfer_state(message["payload"]["target"]))
+            else:
+                raise ProtocolError("unsupported server command from RM")
         else:
             raise ProtocolError(f"unexpected {message['type']} from RM")
 
@@ -668,6 +672,7 @@ class ServerApp:
             return
         if await listener.install_checkpoint(payload["state"], payload["last_request_nums"]):
             self.received_checkpoint_count = count
+            self._logger.checkpoint_installed(me, source, self.state_machine.snapshot(), count)
 
     async def close(self) -> None:
         servers = [

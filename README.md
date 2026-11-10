@@ -63,6 +63,7 @@ needs no SSH or shared paths.
 ```bash
 .venv/bin/python scripts/m5_smoke.py
 .venv/bin/python scripts/m5_smoke.py --mode passive --first S2
+.venv/bin/python scripts/m5_smoke.py --demo-timing
 ```
 
 The smoke test runs the 11 real application processes, injects three successive
@@ -70,11 +71,15 @@ crashes in each mode, checks continuous client progress and state recovery, and
 writes evidence in a fresh directory under `logs/m5-smoke/`. Only LFDs relaunch
 replicas. Each client completes 240 requests in the test; the live demo runs
 indefinitely. The pytest suite repeats both modes with S1, S2 and S3 starting first.
+`--demo-timing` keeps the demo's original recovery/heartbeat/checkpoint periods and
+timeouts, and extends the workload to 1200 requests per client.
 
 Use the [English four-computer guide](docs/milestone-5-instructions.md) or
 [中文四机演示文档](docs/milestone-5-instructions_zh.md) for exact startup, PID-based
 fault injection, recovery observations and shutdown commands. See the
 [design/contracts](docs/m5-design.md) and [verification report](docs/m5-verification.md).
+The [pre-push review](docs/m5-review-verification.md) records the additional fixes
+and their regression evidence.
 M1–M4 configs keep their original manual process lifecycle. M5 retains M4's
 warm-passive checkpoint loss window; RM runtime configuration changes are deferred.
 

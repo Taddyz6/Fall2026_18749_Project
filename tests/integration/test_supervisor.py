@@ -3,7 +3,7 @@ import io
 
 import pytest
 
-from ft_system.common.config import LfdConfig, RmConfig, ServerConfig
+from ft_system.common.config import ConfigError, LfdConfig, RmConfig, ServerConfig
 from ft_system.common.logging import EventLogger
 from ft_system.common.protocol import ProtocolError, build_rm_command
 from ft_system.lfd.supervisor import ReplicaSupervisor
@@ -138,3 +138,22 @@ async def test_rejects_commands_for_other_replicas(supervisor, destination, targ
     with pytest.raises(ProtocolError):
         await supervisor._on_command(build_rm_command(destination, command, target))
     assert supervisor._process is None
+
+
+@pytest.mark.parametrize("collision", ["log_pid", "log_config", "pid_config", "temporary_config"])
+def test_rejects_colliding_output_paths_without_modifying_files(supervisor, tmp_path, collision):
+    config = supervisor.config_path
+    original = config.read_bytes()
+    log = tmp_path / "S1.log"
+    if collision == "log_pid":
+        log = tmp_path / "S1.pid"
+    elif collision == "log_config":
+        log = config
+    else:
+        config = tmp_path / ("S1.pid" if collision == "pid_config" else "S1.pid.tmp")
+        config.write_bytes(original)
+    with pytest.raises(ConfigError, match="distinct"):
+        ReplicaSupervisor(supervisor.lfd, supervisor.server, supervisor.link.config,
+                          config, log, supervisor.logger)
+    assert config.read_bytes() == original
+    assert not list(tmp_path.rglob("*.pid.tmp")) or collision == "temporary_config"

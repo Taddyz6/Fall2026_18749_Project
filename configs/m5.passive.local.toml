@@ -1,5 +1,5 @@
 # Milestone 5, passive replication, all processes on one computer.
-# m4.active.local.toml is identical except for [replication].
+# m5.active.local.toml is identical except for [replication].
 
 [rm]
 bind_host = "127.0.0.1"

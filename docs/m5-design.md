@@ -49,6 +49,9 @@ a healthy or ready replica.
   commands until the GFD has reported membership. Rejoining replicas use the
   existing checkpoint/readiness flow. Never use a process-launch acknowledgement
   to mark a replica as a member or ready.
+  A new server registration clears that ID's previous readiness; only its current
+  connection may update status, so buffered frames from an older process cannot
+  cancel the replacement's state transfer.
 - MOD-003: `lfd/supervisor.py`, `lfd/main.py`: connect outbound to RM, validate local
   ownership, launch only the configured Python server entry point, append stdout
   to a local log and publish its PID. Serialize launches, retain the child handle,
@@ -89,6 +92,9 @@ plus newline). PID files are local operational aids, removed when the owned chil
 exits; they are not liveness/ownership authority. Normal shutdown uses the child
 handle, never a PID read from disk. Failed starts leave diagnostics and retry at
 the RM cadence. Log files are retained for review.
+Config, log, PID and temporary PID paths must be distinct. This is a simple path
+equality check before creating a child or modifying files; general filesystem
+alias handling is outside the requested scope.
 
 ## Implementation and verification gates
 

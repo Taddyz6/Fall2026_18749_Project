@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import sys
 
-from ft_system.common.config import LfdConfig, RmConfig, ServerConfig
+from ft_system.common.config import ConfigError, LfdConfig, RmConfig, ServerConfig
 from ft_system.common.logging import EventLogger
 from ft_system.common.protocol import (
     MessageType, ProtocolError, build_heartbeat, build_launch_result,
@@ -30,6 +30,9 @@ class ReplicaSupervisor:
         self.config_path = Path(config_path).resolve()
         self.log_path = Path(log_path).resolve()
         self.pid_path = self.log_path.with_suffix(".pid")
+        paths = (self.config_path, self.log_path, self.pid_path, self.pid_path.with_suffix(".pid.tmp"))
+        if len(set(paths)) != len(paths):
+            raise ConfigError("replica log, PID, temporary PID, and config paths must be distinct")
         self.link = RmLink(lfd.lfd_id, "lfd", rm, logger, self._on_command)
         self._process: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()

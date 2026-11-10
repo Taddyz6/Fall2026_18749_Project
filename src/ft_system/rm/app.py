@@ -116,6 +116,8 @@ class RmApp:
             if ident not in self._server_ids:
                 raise ProtocolError(f"unknown replica {ident}")
             previous, self._servers[ident] = self._servers.get(ident), peer
+            # A reused replica ID is not proof that the new process has its old state.
+            self._reported[ident] = False
         elif kind == "lfd":
             if not self.recovery.enabled or ident not in self._lfd_servers:
                 raise ProtocolError(f"unknown or disabled recovery LFD {ident}")
@@ -154,12 +156,16 @@ class RmApp:
         try:
             hello = await read_message_with_timeout(reader, self.config.connect_timeout)
             session = kind, ident, peer = self._register(hello, writer)
+            if kind == "server":
+                await self._on_status(ident, False)
             if kind in {"server", "client"}:
                 await self._send(peer, build_view(ident, self.policy.view()))
             if kind == "server":
                 self._retry_now(ident)
             while True:
                 message = await read_message(reader)
+                if kind == "server" and self._servers.get(ident) is not peer:
+                    raise ProtocolError("stale server session")
                 if kind == "gfd" and message["type"] == MessageType.MEMBERSHIP_REPORT:
                     await self._on_membership(message["payload"]["members"])
                 elif (kind == "server" and message["type"] == MessageType.REPLICA_STATUS

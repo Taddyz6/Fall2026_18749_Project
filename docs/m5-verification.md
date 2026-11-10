@@ -1,11 +1,15 @@
 # M5 implementation and verification
 
+This is the initial implementation record at `57f3a34`. The subsequent
+[pre-push review and final checks](m5-review-verification.md) supersede its test
+count and readiness/checkpoint-evidence findings.
+
 2026-11-09, macOS / Python 3.13.2. Branch `m5` starts from `m4-fix` commit
 `ee6bbc6`. The agreed scope is the M5 automatic-recovery rubric, tests, and
 English/Chinese four-computer instructions. RM runtime configuration changes
 were explicitly deferred.
 
-Implementation and local acceptance are complete. The final suite is **225 passed**
+The initial local suite was **225 passed**
 (51 more than the 174-test M4 baseline), including real subprocess crashes in both
 modes with each of S1/S2/S3 starting first. Physical four-computer execution remains
 unverified; this report does not claim that the LAN demo has passed.

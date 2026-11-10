@@ -107,6 +107,8 @@ tail -n 80 -F logs/m5-active/S1.log
 
 客户端会无限循环。Active 请求发送给全部副本，每个请求只交付一个回复，其余去重。
 副本每次恢复后的输出都追加到同一个文件，原 `tail` 窗口可持续显示。
+配置、server 日志、相邻的 `.pid` 和 `.pid.tmp` 文件必须使用不同路径；LFD 会在启动前
+拒绝直接重合的路径。
 
 ## Active 三轮故障
 
@@ -137,6 +139,9 @@ server 启动命令。
 5. RM view 中三个副本均 ready，S2 的重复回复恢复；client 不出现 `replica state divergence`。
 
 必须等到 **ready**，不能仅看到 `RM: 3 members` 就注入下一轮故障。
+判断实际状态时，查看 `installed checkpoint` 和 `my_state_S2`。只有
+`received checkpoint` 不能证明安装成功：副本已经 ready 时，迟到的 checkpoint
+可能被接收后忽略。
 
 ## Passive 三轮故障
 
@@ -194,11 +199,14 @@ restart_retry = 1.0
 .venv/bin/python -m pytest -q
 .venv/bin/python scripts/m5_smoke.py
 .venv/bin/python scripts/m5_smoke.py --mode passive --first S2
+.venv/bin/python scripts/m5_smoke.py --demo-timing
 ```
 
 Smoke 自动分配 loopback 端口，启动 11 个业务进程并实际杀掉副本。只有 LFD 可以
-启动 server 子进程，测试脚本不会替系统重启副本。每个 client 完成 240 个请求，
-检查 membership、readiness、主备角色、checkpoint、请求顺序、active 一致性和退出清理。
+启动 server 子进程，测试脚本不会替系统重启副本。默认缩短各计时参数，每个 client
+完成 240 个请求。`--demo-timing` 保留演示配置的原有周期和超时，每个 client 完成
+1200 个请求，以覆盖更长的恢复过程。检查 membership、readiness、主备角色、checkpoint、
+请求顺序、active 一致性和退出清理。
 配置、各进程日志和各模式的 `result.json` 写入 `logs/m5-smoke/` 下新的时间戳目录。
 pytest 还会分别让 S1/S2/S3 先启动，覆盖两种模式。
 这些是本机测试；四机网络仍需实际执行上面的流程，并保留终端日志作为现场证据。
