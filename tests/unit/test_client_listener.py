@@ -1,5 +1,7 @@
 import io
 
+import pytest
+
 from ft_system.common.logging import EventLogger
 from ft_system.common.protocol import build_client_request, decode_message
 from ft_system.server.app import ClientListener
@@ -75,6 +77,36 @@ async def test_retry_after_install_is_answered_from_rebuilt_duplicate_cache():
     reply = await replica._process(request("C1", 3), FakeWriter())
 
     assert reply["payload"]["client_value"] == 3
+    assert replica._state_machine.snapshot() == {"C1": 3, "C2": 0}
+
+
+@pytest.mark.parametrize("strict_order", [False, True])
+async def test_late_request_covered_by_checkpoint_does_not_disconnect_active_client(strict_order):
+    replica = listener(ready=False, strict_order=strict_order)
+    await replica.install_checkpoint({"C1": 3, "C2": 0}, {"C1": 3, "C2": 0})
+
+    reply = await replica._process(request("C1", 1), FakeWriter())
+
+    if strict_order:
+        assert reply is None
+    else:
+        assert reply["payload"]["code"] == "stale_request"
+    assert replica._state_machine.snapshot() == {"C1": 3, "C2": 0}
+    boundary = await replica._process(request("C1", 3), FakeWriter())
+    assert boundary["payload"]["client_value"] == 3
+    next_reply = await replica._process(request("C1", 4), FakeWriter())
+    assert next_reply["payload"]["client_value"] == 4
+
+
+async def test_late_request_with_different_operation_is_still_rejected():
+    replica = listener(ready=False, strict_order=True)
+    await replica.install_checkpoint({"C1": 3, "C2": 0}, {"C1": 3, "C2": 0})
+    invalid = request("C1", 1)
+    invalid["payload"]["operation"] = "decrement"
+
+    reply = await replica._process(invalid, FakeWriter())
+
+    assert reply["payload"]["code"] == "stale_request"
     assert replica._state_machine.snapshot() == {"C1": 3, "C2": 0}
 
 

@@ -217,7 +217,9 @@ class RmApp:
     def _retry_now(self, replica_id: str) -> None:
         now = asyncio.get_running_loop().time()
         for target, donor in self._due:
-            if replica_id in (target, donor):
+            key = (target, donor)
+            # Registration may speed up a retry, but must not skip the first transfer delay.
+            if replica_id in key and (key in self._issued or key in self._waiting):
                 self._due[(target, donor)] = min(self._due[(target, donor)], now)
         self._wake.set()
 

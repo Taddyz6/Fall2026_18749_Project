@@ -82,7 +82,7 @@ def _require_rm_source(message: dict[str, Any]) -> None:
 
 def _validate_view(payload: dict[str, Any]) -> None:
     payload["view_num"] = _require_non_negative_int(payload.get("view_num"), "view_num")
-    if payload.get("mode") not in REPLICATION_MODES:
+    if _require_string(payload.get("mode"), "mode") not in REPLICATION_MODES:
         raise ProtocolError("mode must be active or passive")
     members = _require_id_list(payload.get("members"), "members")
     ready = _require_id_list(payload.get("ready"), "ready")
@@ -174,7 +174,7 @@ def validate_message(message: Mapping[str, Any]) -> dict[str, Any]:
         payload["last_request_nums"] = last
     elif message_type is MessageType.HELLO:
         _require_rm_destination(validated)
-        if payload.get("kind") not in RM_PEER_KINDS:
+        if _require_string(payload.get("kind"), "kind") not in RM_PEER_KINDS:
             raise ProtocolError("hello kind must be gfd, server, or client")
     elif message_type is MessageType.MEMBERSHIP_REPORT:
         _require_rm_destination(validated)
@@ -184,7 +184,7 @@ def validate_message(message: Mapping[str, Any]) -> dict[str, Any]:
         _validate_view(payload)
     elif message_type is MessageType.RM_COMMAND:
         _require_rm_source(validated)
-        if payload.get("command") not in RM_COMMANDS:
+        if _require_string(payload.get("command"), "command") not in RM_COMMANDS:
             raise ProtocolError("command must be set_ready or transfer_state")
         if payload["command"] == "transfer_state":
             payload["target"] = _require_string(payload.get("target"), "target")

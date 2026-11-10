@@ -1,4 +1,4 @@
-"""Exercise the twelve M4 processes (RM, GFD, LFD1-3, S1-3, C1-3) through kills and manual relaunches."""
+"""Exercise the eleven M4 processes (RM, GFD, LFD1-3, S1-3, C1-3) through kills and manual relaunches."""
 
 import argparse
 import os

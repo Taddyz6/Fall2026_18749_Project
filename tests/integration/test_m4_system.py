@@ -1,6 +1,9 @@
 import asyncio
 import io
 
+import pytest
+
+import ft_system.client.active as active_module
 from ft_system.client.active import ActiveClientApp
 from ft_system.client.app import ServerEndpoint
 from ft_system.client.passive import PassiveClientApp
@@ -148,6 +151,169 @@ async def test_active_relaunched_replica_logs_then_catches_up_without_divergence
         assert not any("divergence" in cluster.log(client_id) for client_id in CLIENTS)
     finally:
         await cluster.close()
+
+
+async def test_active_recovery_keeps_connection_when_checkpoint_overtakes_requests(monkeypatch):
+    cluster = Cluster("active")
+    transfer_allowed, requests_allowed, request_arrived = (asyncio.Event() for _ in range(3))
+    await cluster.start()
+    try:
+        for replica in REPLICAS:
+            await cluster.launch(replica)
+            await eventually(lambda: replica in cluster.rm.policy.ready, timeout=3)
+        client = cluster.add_client(ActiveClientApp, "C1", .5, 1.0)
+        for _ in range(5):
+            await client.send_increment()
+        await cluster.crash("S2")
+        for _ in range(5):
+            await client.send_increment()
+
+        transfer = cluster.replicas["S1"]._transfer_state
+
+        async def delayed_transfer(target):
+            await transfer_allowed.wait()
+            await transfer(target)
+
+        monkeypatch.setattr(cluster.replicas["S1"], "_transfer_state", delayed_transfer)
+        s2 = await cluster.launch("S2", "S2-relaunch")
+        process = s2.client_listener._process
+
+        async def delayed_request(request, writer):
+            request_arrived.set()
+            await requests_allowed.wait()
+            return await process(request, writer)
+
+        monkeypatch.setattr(s2.client_listener, "_process", delayed_request)
+        await eventually(lambda: "S2" in client._connections, timeout=2)
+        connection = client._connections["S2"]
+        for _ in range(5):
+            await client.send_increment()
+        await asyncio.wait_for(request_arrived.wait(), 1)
+        # Two independent TCP channels: checkpoint 15 arrives before requests 11-15.
+        transfer_allowed.set()
+        await eventually(lambda: "S2" in cluster.rm.policy.ready, timeout=3)
+        assert s2.state_machine.snapshot()["C1"] == 15
+        requests_allowed.set()
+        await eventually(lambda: connection.last_received == 15 or connection.task.done(), timeout=2)
+        assert not connection.task.done(), cluster.log("C1")
+        assert client._connections["S2"] is connection
+
+        for number in range(16, 21):
+            assert (await client.send_increment())["payload"]["client_value"] == number
+        await eventually(lambda: cluster.states() == [{"C1": 20, "C2": 0, "C3": 0}] * 3)
+        assert cluster.rm.policy.ready == set(REPLICAS)
+        assert "divergence" not in cluster.log("C1")
+    finally:
+        requests_allowed.set()
+        transfer_allowed.set()
+        await cluster.close()
+
+
+async def test_registering_replica_preserves_initial_transfer_delay(monkeypatch):
+    cluster = Cluster("active")
+    transferred = asyncio.Event()
+    await cluster.start()
+    try:
+        donor = await cluster.launch("S1")
+        await eventually(lambda: "S1" in cluster.rm.policy.ready)
+        transfer = donor._transfer_state
+        transfer_times = []
+
+        async def record_transfer(target):
+            transfer_times.append(asyncio.get_running_loop().time())
+            transferred.set()
+            await transfer(target)
+
+        monkeypatch.setattr(donor, "_transfer_state", record_transfer)
+        started = asyncio.get_running_loop().time()
+        # The GFD's membership report can arrive before the replica registers with RM.
+        cluster.reporters["S2"].set_health(True)
+        await eventually(lambda: "S2" in cluster.rm.membership)
+        await cluster.launch("S2")
+        await asyncio.wait_for(transferred.wait(), 2)
+
+        assert transfer_times[0] - started >= cluster.rm_config.transfer_delay
+        await eventually(lambda: "S2" in cluster.rm.policy.ready)
+    finally:
+        await cluster.close()
+
+
+@pytest.mark.parametrize("failure", ["initial", "disconnect"])
+async def test_active_retries_current_member_without_new_view(monkeypatch, failure):
+    cluster = Cluster("active")
+    failed_attempt = asyncio.Event()
+    allow_connection = failure == "disconnect"
+    open_connection = active_module.open_connection_with_timeout
+
+    async def unavailable_s2(host, port, timeout):
+        if port == cluster.servers["S2"].client_port and not allow_connection:
+            failed_attempt.set()
+            raise TimeoutError("temporary client-channel outage")
+        return await open_connection(host, port, timeout)
+
+    await cluster.start()
+    try:
+        for replica in REPLICAS:
+            await cluster.launch(replica)
+            await eventually(lambda: replica in cluster.rm.policy.ready, timeout=3)
+        monkeypatch.setattr(active_module, "open_connection_with_timeout", unavailable_s2)
+        client = cluster.add_client(ActiveClientApp, "C1", .5, 1.0)
+        await client.connect()
+        view_num = cluster.rm.policy.view_num
+        await eventually(lambda: f"C1: view {view_num}:" in cluster.log("C1"))
+        if failure == "disconnect":
+            allow_connection = False
+            client._connections["S2"].writer.close()
+            await eventually(lambda: "S2" not in client._connections)
+        for _ in range(5):
+            await client.send_increment()
+        await asyncio.wait_for(failed_attempt.wait(), 2)
+        allow_connection = True
+
+        # No membership/readiness change is available to trigger the next attempt.
+        await eventually(lambda: "S2" in client._connections, timeout=2)
+        assert cluster.rm.policy.view_num == view_num
+        assert (await client.send_increment())["payload"]["client_value"] == 6
+        await eventually(lambda: cluster.states() == [{"C1": 6, "C2": 0, "C3": 0}] * 3, timeout=3)
+        assert "divergence" not in cluster.log("C1")
+    finally:
+        await cluster.close()
+
+
+@pytest.mark.parametrize("action", ["remove_member", "close_client"])
+async def test_active_cancels_unneeded_connection_attempts(monkeypatch, action):
+    logger = EventLogger(stream=io.StringIO(), use_color=False)
+    server = ServerApp(ServerConfig("S1", "127.0.0.1", "127.0.0.1", 0, 0), CLIENTS, logger)
+    await server.start()
+    client = ActiveClientApp("C1", [ServerEndpoint("S1", "127.0.0.1", server.bound_client_port)],
+                             .5, 1.0, logger)
+    started, release = asyncio.Event(), asyncio.Event()
+    open_connection = active_module.open_connection_with_timeout
+
+    async def delayed_connection(*args):
+        started.set()
+        await release.wait()
+        return await open_connection(*args)
+
+    monkeypatch.setattr(active_module, "open_connection_with_timeout", delayed_connection)
+    view = {"view_num": 1, "mode": "active", "members": ["S1"], "ready": ["S1"], "primary": None}
+    try:
+        client.apply_view(view)
+        await asyncio.wait_for(started.wait(), 1)
+        if action == "remove_member":
+            client.apply_view(view | {"view_num": 2, "members": [], "ready": []})
+        else:
+            await client.close()
+            client.apply_view(view)  # A late callback must not revive a closed client.
+            assert not client._tasks
+        release.set()
+        await eventually(lambda: not client._opening)
+        assert not client._connections
+        await eventually(lambda: not server._active_writers)
+    finally:
+        release.set()
+        await client.close()
+        await server.close()
 
 
 async def test_passive_primary_failover_and_relaunched_replicas_return_as_backups():

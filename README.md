@@ -48,7 +48,7 @@ M4 adds the Replication Manager (`ft_system.rm.main`) and manual recovery, in bo
 python3 scripts/m4_smoke.py
 ```
 
-See the [M4 guide](docs/milestone-4-instructions.md) for the 12-window demo sequences, four-computer commands, design, and trade-offs.
+See the [M4 guide](docs/milestone-4-instructions.md) for the 11-window demo sequences, four-computer commands, design, and trade-offs.
 
 ## Milestone 2 smoke test details
 
@@ -56,7 +56,7 @@ This separate, headless test chooses available loopback ports, launches ten chil
 
 ## Client and replica behavior
 
-Clients send automatically by default in all configurations; `--interactive` enables manual requests. Without an RM (M1–M3 configs), a client continues with the surviving replicas after a connection fails and does not reconnect, so restart the **whole system** for a fresh demonstration. With an RM (M4), clients reconnect to replicas when the RM's view shows that they have rejoined.
+Clients send automatically by default in all configurations; `--interactive` enables manual requests. Without an RM (M1–M3 configs), a client continues with the surviving replicas after a connection fails and does not reconnect, so restart the **whole system** for a fresh demonstration. With an RM (M4), clients reconnect to replicas when the RM's view shows that they have rejoined. Active clients also retry failed connections to current members without waiting for another view.
 
 Each replica preserves the M1 per-client counter state machine. It remembers the last reply for each client so retrying that client's latest request does not increment twice. Independent client counters converge after every surviving replica has processed the same requests. This design does not provide a general cross-client total order.
 

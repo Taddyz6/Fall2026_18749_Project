@@ -9,6 +9,9 @@ from ft_system.common.retry import open_connection_with_timeout
 from ft_system.common.transport import close_writer, read_message, write_message
 
 
+RECONNECT_DELAY = 0.5
+
+
 @dataclass
 class ReplicaConnection:
     endpoint: ServerEndpoint
@@ -41,6 +44,9 @@ class ActiveClientApp:
         self._closing = False
         self._opening = set()
         self._ever_connected = set()
+        self._members = None  # Reconnection is enabled only after an RM view (M4).
+        self._reconnect_task = None
+        self._reconnect_wake = asyncio.Event()
 
     @property
     def next_request_num(self):
@@ -49,6 +55,8 @@ class ActiveClientApp:
     async def _open_replica(self, endpoint):
         replica = endpoint.replica_id
         if replica in self._connections or replica in self._opening or self._closing:
+            return
+        if self._members is not None and replica not in self._members:
             return
         self._opening.add(replica)
         try:
@@ -59,7 +67,7 @@ class ActiveClientApp:
             return
         finally:
             self._opening.discard(replica)
-        if self._closing:
+        if self._closing or (self._members is not None and replica not in self._members):
             await close_writer(writer)
             return
         if replica in self._ever_connected:
@@ -80,12 +88,25 @@ class ActiveClientApp:
         await asyncio.gather(*(self._open_replica(endpoint) for endpoint in self.endpoints))
 
     def apply_view(self, view):
-        """Open connections to members of the RM's view that this client lacks."""
-        for endpoint in self.endpoints:
-            if endpoint.replica_id in view["members"] and endpoint.replica_id not in self._connections:
-                task = asyncio.create_task(self._open_replica(endpoint))
-                self._tasks.add(task)
-                task.add_done_callback(self._tasks.discard)
+        """Keep connections to the RM's current members, including after transient failures."""
+        if self._closing:
+            return
+        self._members = set(view["members"])
+        if self._reconnect_task is None:
+            self._reconnect_task = asyncio.create_task(self._reconnect_members())
+            self._tasks.add(self._reconnect_task)
+            self._reconnect_task.add_done_callback(self._tasks.discard)
+        self._reconnect_wake.set()
+
+    async def _reconnect_members(self):
+        while not self._closing:
+            self._reconnect_wake.clear()
+            await asyncio.gather(*(self._open_replica(endpoint) for endpoint in self.endpoints
+                                   if endpoint.replica_id in self._members))
+            try:
+                await asyncio.wait_for(self._reconnect_wake.wait(), RECONNECT_DELAY)
+            except TimeoutError:
+                pass
 
     async def _retire(self, connection, reason):
         replica = connection.endpoint.replica_id

@@ -1,6 +1,6 @@
 # Milestone 4: Replication Manager and manual recovery
 
-M4 adds the Replication Manager (RM) and runs **12 processes**: RM, GFD, LFD1–LFD3, S1–S3, and C1–C3. The same code runs both required configurations: `mode = "active"` and `mode = "passive"`. A replica that is killed and relaunched by hand starts with `i_am_ready = 0`, gets correct state from a healthy replica, and then serves again. In passive mode, a dead primary is replaced by an elected backup.
+M4 adds the Replication Manager (RM) and runs **11 processes**: RM, GFD, LFD1–LFD3, S1–S3, and C1–C3. The same code runs both required configurations: `mode = "active"` and `mode = "passive"`. A replica that is killed and relaunched by hand starts with `i_am_ready = 0`, gets correct state from a healthy replica, and then serves again. In passive mode, a dead primary is replaced by an elected backup.
 
 ## Layout and configuration
 
@@ -65,6 +65,7 @@ Use the passive config and the same start sequence. The RM prints `RM: primary i
 - **RM view.** The RM owns `{view_num, mode, members, ready, primary}`. Membership comes only from the GFD. Readiness comes from each replica's own report. The RM pushes every new view to replicas and clients, which hold one TCP connection to the RM each. Clients learn membership from the RM rather than the GFD because only the RM knows the passive primary. The guide allows alternative designs as long as the demonstrated behavior is preserved.
 - **i_am_ready.** With an RM, every replica starts not ready. The first replica of its kind is told to become ready as it is. In active mode every later replica gets a checkpoint from the earliest ready replica, sent on the RM's `transfer_state` command. In passive mode a backup becomes ready on the primary's first periodic checkpoint.
 - **Catch-up without losing requests.** A checkpoint carries `my_state`, `checkpoint_count`, and the last `request_num` applied for each client. The replica restores the state, rebuilds its duplicate-reply cache, and replays its logged requests in arrival order. It skips requests the state already includes, answers the boundary request from the cache, and applies newer requests. Each client's counter changes only on that client's requests, and each client's requests arrive in order, so this matches the donor exactly.
+- **Late requests and reconnects.** An active replica also discards already-applied increments that arrive after checkpoint installation, keeping the client connection open. Active clients retry missing connections to current RM members every 0.5 seconds after each connection attempt completes, even when the view does not change. Requests to connected replicas continue during retries.
 - **Gap detection.** An active replica that sees `request_num` jump (it missed requests another replica applied) sets `i_am_ready = 0` and asks for state again. A checkpoint older than the start of a replica's log is refused and retried. This handles a race between a client reconnecting and the snapshot being taken.
 - **Election.** The new primary is the ready member that joined earliest; replicas are never hard-coded as primary. A relaunched replica always returns as a backup.
 
@@ -83,6 +84,6 @@ python3 -m pytest -q
 python3 scripts/m4_smoke.py              # both modes; or --mode active / --mode passive
 ```
 
-`m4_smoke.py` runs the 12-process topology on loopback with short timers. It kills and relaunches S2 in both modes, kills S1 in both modes (in passive mode this exercises primary election), and relaunches S1 in passive mode. It checks the RM, replica, and client logs, and saves them to `logs/m4-smoke/<mode>/`. It uses a hard kill, so it also runs on Windows. The pytest suite includes in-process versions of both scenarios (`tests/integration/test_m4_system.py`).
+`m4_smoke.py` runs the 11-process topology on loopback with short timers. It kills and relaunches S2 in both modes, kills S1 in both modes (in passive mode this exercises primary election), and relaunches S1 in passive mode. It checks the RM, replica, and client logs, and saves them to `logs/m4-smoke/<mode>/`. It uses a hard kill, so it also runs on Windows. The pytest suite includes in-process versions of both scenarios (`tests/integration/test_m4_system.py`).
 
 The Milestone 1–3 configs and demos are unchanged. A config without `[rm]` keeps the earlier behavior: replicas are ready at start and the passive primary is fixed by `primary_id`.

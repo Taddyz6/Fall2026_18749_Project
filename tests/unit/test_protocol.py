@@ -150,6 +150,22 @@ def test_rm_messages_check_direction():
         build_rm_command("S1", "transfer_state")
 
 
+@pytest.mark.parametrize("field", ["kind", "mode", "command"])
+@pytest.mark.parametrize("value", [None, True, 42, [], {}])
+def test_rm_control_fields_reject_non_strings_as_protocol_errors(field, value):
+    messages = {
+        "kind": build_hello("S1", "server"),
+        "mode": build_view("C1", {"view_num": 1, "mode": "active", "members": ["S1"],
+                                  "ready": ["S1"], "primary": None}),
+        "command": build_rm_command("S1", "set_ready"),
+    }
+    message = messages[field]
+    message["payload"][field] = value
+
+    with pytest.raises(ProtocolError, match=field):
+        decode_message(json.dumps(message).encode() + b"\n")
+
+
 def test_error_can_refer_to_a_logical_request():
     error = build_error(
         source="S1",

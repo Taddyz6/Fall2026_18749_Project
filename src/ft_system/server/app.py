@@ -165,6 +165,11 @@ class ClientListener:
             if not self.ready:
                 self._log_unready(request, writer)
                 return None
+            if self.strict_order and number < last and request["payload"]["operation"] == "increment":
+                # A checkpoint can overtake requests on the independent client channel.
+                # They are already applied and answered; do not break that channel.
+                self._logger.event(f"{self._replica_id}: discarded already-applied request {request['request_id']}")
+                return None
             return self._apply(request)
 
     def _first_gap(self, last_request_nums: dict[str, int]) -> tuple[str, int, int] | None:
