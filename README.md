@@ -50,6 +50,8 @@ python3 scripts/m4_smoke.py
 
 See the [M4 guide](docs/milestone-4-instructions.md) for the 11-window demo sequences, four-computer commands, design, and trade-offs. For the required four-computer demo, follow the step-by-step [English guide](docs/milestone-4-distributed-demo.md) or [Chinese guide](docs/milestone-4-distributed-demo_zh.md).
 
+To rehearse on one computer with one window per process, run `python scripts/m4_demo.py` (add `--autopilot` to watch it crash and recover replicas by itself, `--stop` to close the windows).
+
 For four-laptop runs, see [demo troubleshooting](docs/demo-troubleshooting.md). Run `PYTHONPATH=src python -m ft_system.doctor --config <distributed config>` on every laptop before starting, and press Enter in any process window for a status snapshot. After a run, `scripts/merge_logs.py` merges the per-process logs in `logs/console/` into one timeline.
 
 ## Milestone 2 smoke test details

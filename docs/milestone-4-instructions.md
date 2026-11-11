@@ -41,6 +41,16 @@ PYTHONPATH=src python -m ft_system.client.main --config configs/m4.active.distri
 
 To recover a replica manually, run the same `ft_system.server.main` command again on its computer. Leave the LFD running.
 
+## Rehearse on one computer
+
+```bash
+python scripts/m4_demo.py                      # active; add --mode passive for the passive config
+python scripts/m4_demo.py --autopilot          # also crashes and relaunches replicas, checking every step
+python scripts/m4_demo.py --stop               # close all eleven windows
+```
+
+The launcher opens the eleven processes in separate, titled windows in the rubric's start order, waiting for each step, and tiles them in four columns: RM and GFD, C1-C3, S1-S3, and LFD1-LFD3. In any process window, **Ctrl-C** crashes that process, **Enter** prints its status while it runs, and **Enter** after it stops relaunches it (manual recovery). On Windows it uses Windows Terminal; the macOS path uses Terminal and is untested. Logs go to `logs/demo/<time>-<mode>/`.
+
 ## Demo: active replication with manual recovery
 
 1. Start the RM. It prints `RM: 0 members`.

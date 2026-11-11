@@ -18,6 +18,8 @@ It also covers the preflight check before the demo, how to diagnose problems dur
 
 That is **11 processes in 11 windows**. Each process gets its own window; don't paste several commands into one window. All four computers must be on the same network and able to reach each other. Guest Wi-Fi and some campus networks block traffic between devices; the doctor in section 4 detects this.
 
+Rehearse on one computer first: `python scripts/m4_demo.py --autopilot` opens all eleven windows on one screen and runs the active demo by itself (`--mode passive` for the passive one, `--stop` to close the windows).
+
 ## 2. Prepare each computer
 
 Run once on **each** computer, from the project root:
