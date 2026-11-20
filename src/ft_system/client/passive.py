@@ -76,20 +76,20 @@ class PassiveClientApp:
                 continue
             self.logger.event(f"{self.client_id}: connected to idle backup {replica}")
 
-    async def _primary_connection(self):
+    async def _primary_connection(self, primary):
         if self._primary is not None:
             replica, reader, writer = self._primary
-            if replica == self.primary_id and not writer.is_closing():
+            if replica == primary and not writer.is_closing():
                 return reader, writer
             self._primary = None
             if replica in self._members and not writer.is_closing():
                 self._idle[replica] = (reader, writer)  # A demoted primary becomes an idle backup.
             else:
                 await close_writer(writer)
-        connection = self._idle.pop(self.primary_id, None)
+        connection = self._idle.pop(primary, None)
         if connection is None or connection[1].is_closing():
-            connection = await self._open(self.primary_id)
-        self._primary = (self.primary_id, *connection)
+            connection = await self._open(primary)
+        self._primary = (primary, *connection)
         return connection
 
     async def _drop_primary(self):
@@ -109,8 +109,9 @@ class PassiveClientApp:
                     await asyncio.wait_for(self._primary_known.wait(), self.connect_timeout)
                 if self.primary_id is None:
                     raise ConnectionError("no primary known yet; waiting for the RM view")
-            reader, writer = await self._primary_connection()
+            # The RM view can change while connecting. Use one destination for this attempt.
             primary = self.primary_id
+            reader, writer = await self._primary_connection(primary)
             request = build_client_request(self.client_id, primary, self._next_request_num)
             self.logger.sending(request, "request")
             try:

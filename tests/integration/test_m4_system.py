@@ -357,3 +357,32 @@ async def test_passive_primary_failover_and_relaunched_replicas_return_as_backup
         assert cluster.rm.policy.primary == "S2"
     finally:
         await cluster.close()
+
+
+async def test_passive_request_keeps_its_primary_when_the_view_changes_while_connecting():
+    logger = EventLogger(stream=io.StringIO(), use_color=False)
+    servers = [ServerApp(ServerConfig(replica, "127.0.0.1", "127.0.0.1", 0, 0), CLIENTS, logger)
+               for replica in ("S1", "S2")]
+    for server in servers:
+        await server.start()
+    endpoints = [ServerEndpoint(s.config.replica_id, "127.0.0.1", s.bound_client_port) for s in servers]
+    client = PassiveClientApp("C1", endpoints, "S1", .5, .5, logger)
+    client._sync_needed = False  # No idle connections, so the primary connection is opened on demand.
+    open_connection = client._open
+
+    async def view_arrives_during_open(replica):
+        connection = await open_connection(replica)
+        if replica == "S1":
+            client.apply_view({"view_num": 2, "mode": "passive", "members": ["S1", "S2"],
+                               "ready": ["S1", "S2"], "primary": "S2"})
+        return connection
+
+    client._open = view_arrives_during_open
+    try:
+        first = await client.send_increment()
+        assert first["replica_id"] == "S1" and client._primary[0] == "S1"
+        second = await client.send_increment()
+        assert second["replica_id"] == "S2" and second["request_num"] == 2
+    finally:
+        await client.close()
+        await asyncio.gather(*(server.close() for server in servers))
