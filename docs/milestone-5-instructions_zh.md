@@ -88,31 +88,61 @@ nc -vz 192.168.1.42 7200
 - 若某一行显示 `Connection refused`，请 A 的同学检查对应进程是否正在运行。例如只有 7200 被拒绝，就先看 A 的 GFD 窗口。
 - 若显示 `timed out`，先确认命令里的 IP 与 A 报的一致，再检查演示网络和 A 的防火墙是否允许连接该端口。
 
-在 **B** 启动 LFD1；收到 RM 指令后，它会自动启动 S1：
+B、C、D 各用两个终端。终端 1 运行本机 LFD，显示 LFD 的输出。LFD 按 A 上 RM 的指令
+自动启动或重启本机 server，把 server 的输出写入 `--replica-log` 指定的文件。
+LFD 显示 `launched` 和新 PID 后，就可以在终端 2 用 `tail -n 80 -F` 给 TA 看 server 日志。
+它先显示文件最近 80 行，然后实时显示新输出。server 自动重启后仍写入同一文件，
+原窗口可以接着看。关掉这个查看窗口，LFD 和 server 仍会继续运行。
+
+**B 先在终端 1 启动 LFD1。**
 
 ```bash
-.venv/bin/python -m ft_system.lfd.main --config configs/m5.active.distributed.toml --lfd-id LFD1 --replica-log logs/m5-active/S1.log
+# B
+.venv/bin/python -m ft_system.lfd.main \
+  --config configs/m5.active.distributed.toml \
+  --lfd-id LFD1 --replica-log logs/m5-active/S1.log
 ```
 
-等到 `RM: S1 is ready (i_am_ready = 1)`。然后依次在 **C**、**D** 启动对应 LFD，
-每启动一个，都等其副本 ready 后再继续：
+B 在终端 2 查看 S1 的日志。
 
 ```bash
-# C
-.venv/bin/python -m ft_system.lfd.main --config configs/m5.active.distributed.toml --lfd-id LFD2 --replica-log logs/m5-active/S2.log
-# D
-.venv/bin/python -m ft_system.lfd.main --config configs/m5.active.distributed.toml --lfd-id LFD3 --replica-log logs/m5-active/S3.log
-```
-
-在 B/C/D 各开一个窗口查看本机 server 日志：
-
-```bash
-# B；C 改为 S2，D 改为 S3
 tail -n 80 -F logs/m5-active/S1.log
 ```
 
-等到 RM 最新 view 显示 `members: S1, S2, S3; ready: S1, S2, S3`。
-然后在 **A** 的三个独立窗口启动客户端：
+**A** 在自己的 RM 窗口看到 `RM: S1 is ready (i_am_ready = 1)` 后，通知 **C**。
+C 这时在自己的终端 1 启动 LFD2。
+
+```bash
+# C
+.venv/bin/python -m ft_system.lfd.main \
+  --config configs/m5.active.distributed.toml \
+  --lfd-id LFD2 --replica-log logs/m5-active/S2.log
+```
+
+C 在终端 2 查看 S2 的日志。
+
+```bash
+tail -n 80 -F logs/m5-active/S2.log
+```
+
+**A** 在 RM 窗口看到 `RM: S2 is ready (i_am_ready = 1)` 后，通知 **D**。
+D 这时在自己的终端 1 启动 LFD3。
+
+```bash
+# D
+.venv/bin/python -m ft_system.lfd.main \
+  --config configs/m5.active.distributed.toml \
+  --lfd-id LFD3 --replica-log logs/m5-active/S3.log
+```
+
+D 在终端 2 查看 S3 的日志。
+
+```bash
+tail -n 80 -F logs/m5-active/S3.log
+```
+
+**A** 在 RM 窗口看到 `RM: S3 is ready (i_am_ready = 1)` 后，确认最新 view 显示
+`members: S1, S2, S3; ready: S1, S2, S3`。随后 A 再开三个终端，分别启动 C1、C2、C3，每个终端运行一条命令。
 
 ```bash
 .venv/bin/python -m ft_system.client.main --config configs/m5.active.distributed.toml --client-id C1 --interval 0.2
@@ -121,7 +151,6 @@ tail -n 80 -F logs/m5-active/S1.log
 ```
 
 客户端会无限循环。Active 请求发送给全部副本，每个请求只交付一个回复，其余去重。
-副本每次恢复后的输出都追加到同一个文件，原 `tail` 窗口可持续显示。
 配置、server 日志、相邻的 `.pid` 和 `.pid.tmp` 文件必须使用不同路径；LFD 会在启动前
 拒绝直接重合的路径。
 

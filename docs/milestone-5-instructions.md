@@ -102,31 +102,64 @@ nc -vz 192.168.1.42 7200
 - If a command reports `timed out`, check the IP you entered, then check that
   the demo network and A's firewall allow connections to that port.
 
-On **B**, start LFD1; it will receive an RM command and launch S1 automatically:
+Use two terminals on each of B, C and D. Terminal 1 runs the local LFD and shows
+its output. The RM on A tells the LFD when to start or restart the local server.
+The LFD writes the server's output to the file named by `--replica-log`.
+Once the LFD prints `launched` and the new PID, use `tail -n 80 -F` in terminal 2
+to show the TA the last 80 lines of the server log and new lines as they arrive.
+A restarted server writes to the same file, so the viewer keeps showing its output.
+Closing this viewer leaves the LFD and server running.
+
+**On B**, start LFD1 in terminal 1 before the other two LFDs.
 
 ```bash
-.venv/bin/python -m ft_system.lfd.main --config configs/m5.active.distributed.toml --lfd-id LFD1 --replica-log logs/m5-active/S1.log
+# B
+.venv/bin/python -m ft_system.lfd.main \
+  --config configs/m5.active.distributed.toml \
+  --lfd-id LFD1 --replica-log logs/m5-active/S1.log
 ```
 
-Wait for `RM: S1 is ready (i_am_ready = 1)`. On **C**, then on **D**, start the
-corresponding LFD, waiting for readiness after each one:
+Show S1's log in terminal 2 on B.
 
 ```bash
-# C
-.venv/bin/python -m ft_system.lfd.main --config configs/m5.active.distributed.toml --lfd-id LFD2 --replica-log logs/m5-active/S2.log
-# D
-.venv/bin/python -m ft_system.lfd.main --config configs/m5.active.distributed.toml --lfd-id LFD3 --replica-log logs/m5-active/S3.log
-```
-
-On B/C/D, open a second terminal for that server's output:
-
-```bash
-# B; use S2 on C and S3 on D
 tail -n 80 -F logs/m5-active/S1.log
 ```
 
-Wait for the RM's latest view to show `members: S1, S2, S3; ready: S1, S2, S3`.
-Then start each client in a separate terminal on **A**:
+When the person on **A** sees `RM: S1 is ready (i_am_ready = 1)` in the RM terminal,
+they tell **C** to start LFD2. Run this command in terminal 1 on C.
+
+```bash
+# C
+.venv/bin/python -m ft_system.lfd.main \
+  --config configs/m5.active.distributed.toml \
+  --lfd-id LFD2 --replica-log logs/m5-active/S2.log
+```
+
+Show S2's log in terminal 2 on C.
+
+```bash
+tail -n 80 -F logs/m5-active/S2.log
+```
+
+When the person on **A** sees `RM: S2 is ready (i_am_ready = 1)` in the RM terminal,
+they tell **D** to start LFD3. Run this command in terminal 1 on D.
+
+```bash
+# D
+.venv/bin/python -m ft_system.lfd.main \
+  --config configs/m5.active.distributed.toml \
+  --lfd-id LFD3 --replica-log logs/m5-active/S3.log
+```
+
+Show S3's log in terminal 2 on D.
+
+```bash
+tail -n 80 -F logs/m5-active/S3.log
+```
+
+When **A** sees `RM: S3 is ready (i_am_ready = 1)` in its RM terminal, check that
+the latest view shows `members: S1, S2, S3; ready: S1, S2, S3`. Open three more
+terminals **on A** and start C1, C2 and C3, one command per terminal.
 
 ```bash
 .venv/bin/python -m ft_system.client.main --config configs/m5.active.distributed.toml --client-id C1 --interval 0.2
@@ -134,9 +167,8 @@ Then start each client in a separate terminal on **A**:
 .venv/bin/python -m ft_system.client.main --config configs/m5.active.distributed.toml --client-id C3 --interval 0.2
 ```
 
-Clients run indefinitely. Active requests go to all replicas; each client delivers
-one reply and discards duplicates. The recovered server's log is appended to the
-same file so its `tail` window follows successive incarnations.
+Clients run indefinitely. Active requests go to all replicas. Each client delivers
+one reply and discards duplicates.
 Use distinct paths for the config, server log, adjacent `.pid` file and `.pid.tmp`
 file; the LFD rejects directly repeated paths before launching.
 
