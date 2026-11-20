@@ -31,6 +31,26 @@ class ClusterError(RuntimeError):
     pass
 
 
+def launch(module: str, *arguments: str, log: Path, shim_dir: Path | None = None) -> subprocess.Popen:
+    """Start ``python -m module`` from the checkout, with its output appended to ``log``.
+
+    ``shim_dir`` is the fault directory; give it only for an LFD, whose replica
+    should carry the fault shim.
+    """
+
+    source = str(PROJECT_ROOT / "src")
+    environment = os.environ | {
+        "PYTHONPATH": os.pathsep.join(filter(None, (source, os.environ.get("PYTHONPATH")))),
+        "PYTHONUNBUFFERED": "1",
+    }
+    if shim_dir is not None:
+        environment = ctl.shim_environment(shim_dir, environment)
+    with log.open("ab") as output:
+        return subprocess.Popen([sys.executable, "-m", module, *arguments], cwd=PROJECT_ROOT,
+                                env=environment, stdout=output, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL)
+
+
 def component_processes() -> list[psutil.Process]:
     """Every running process of the fault-tolerant system on this computer."""
 
@@ -59,12 +79,14 @@ class LocalCluster:
     """All processes of one local run; its logs and fault files share ``run_dir``."""
 
     def __init__(self, run_dir: str | Path, config: str | Path = "configs/m5.active.local.toml",
-                 client_interval: float = 0.2) -> None:
+                 client_interval: float = 0.2, clients: int | None = None) -> None:
         self.run_dir = Path(run_dir).resolve()
         self.config_path = (PROJECT_ROOT / config).resolve()
         self.config = load_config(self.config_path)
         self.client_interval = client_interval
         self.servers = tuple(self.config.servers)
+        self.client_ids = tuple(self.config.clients)
+        self.clients = len(self.client_ids) if clients is None else clients  # how many run at the start
         self.lfd_of = {lfd.server_id: lfd_id for lfd_id, lfd in self.config.lfds.items()}
         self._processes: dict[str, subprocess.Popen] = {}
 
@@ -85,18 +107,9 @@ class LocalCluster:
             return ""
 
     def _launch(self, name: str, module: str, *arguments: str, shim: bool = False) -> None:
-        source = str(PROJECT_ROOT / "src")
-        environment = os.environ | {
-            "PYTHONPATH": os.pathsep.join(filter(None, (source, os.environ.get("PYTHONPATH")))),
-            "PYTHONUNBUFFERED": "1",
-        }
-        if shim:
-            environment = ctl.shim_environment(self.run_dir, environment)
-        with self.log_path(name).open("ab") as output:
-            self._processes[name] = subprocess.Popen(
-                [sys.executable, "-m", module, "--config", str(self.config_path), *arguments],
-                cwd=PROJECT_ROOT, env=environment, stdout=output, stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL)
+        self._processes[name] = launch(
+            module, "--config", str(self.config_path), *arguments, log=self.log_path(name),
+            shim_dir=self.run_dir if shim else None)
 
     def view(self) -> tuple[set[str], set[str]]:
         """Members and ready replicas in the RM's latest view."""
@@ -133,12 +146,31 @@ class LocalCluster:
                              self.lfd_of[server_id], "--replica-log", str(self.log_path(server_id)),
                              shim=True)
                 self.wait_ready(self.servers[:count])
-            for client_id in self.config.clients:
-                self._launch(client_id, "ft_system.client.main", "--client-id", client_id,
-                             "--interval", str(self.client_interval))
+            self.set_clients(self.clients)
         except BaseException:
             self.stop()
             raise
+
+    def set_clients(self, count: int) -> None:
+        """Run exactly the first ``count`` configured clients: start or stop the rest.
+
+        A stopped client must not be started again in the same run: it would number its
+        requests from 1 again, and the servers would take them for duplicates.
+        """
+
+        if not 0 <= count <= len(self.client_ids):
+            raise ClusterError(f"the config has {len(self.client_ids)} clients; cannot run {count}")
+        for position, client_id in enumerate(self.client_ids):
+            process = self._processes.get(client_id)
+            running = process is not None and process.poll() is None
+            if position < count and not running:
+                if process is not None:
+                    raise ClusterError(f"{client_id} already ran once in this run")
+                self._launch(client_id, "ft_system.client.main", "--client-id", client_id,
+                             "--interval", str(self.client_interval))
+            elif position >= count and running:
+                kill_tree(process.pid)
+        self.clients = count
 
     def replica_pid(self, server_id: str) -> int | None:
         """PID of the running server process, as its shim registered it."""

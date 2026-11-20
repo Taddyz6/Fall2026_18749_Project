@@ -101,8 +101,10 @@ def describe(fault: Mapping | None) -> str:
             f"{fault['duty']:.0%} of every {fault['period']:g} s")
 
 
-def _record(fault_dir: Path, event: dict) -> None:
-    with (fault_dir / EVENTS_FILE).open("a", encoding="utf-8") as handle:
+def record(fault_dir: str | Path, event: dict) -> None:
+    """Append one ground-truth event; anything done to the system on purpose belongs here."""
+
+    with (Path(fault_dir) / EVENTS_FILE).open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(event) + "\n")
 
 
@@ -138,14 +140,14 @@ def apply(fault_dir: str | Path, server_id: str, fault: Mapping | None, wait: fl
             if fault:
                 # Do not leave an unconfirmed fault behind for the replica to pick up later.
                 write_json(target, request | {"kind": "none", "id": secrets.token_hex(8)})
-                _record(fault_dir, {"t": time.time(), "event": "fault_unconfirmed",
+                record(fault_dir, {"t": time.time(), "event": "fault_unconfirmed",
                                     "server": server_id, "pid": before["pid"]})
             raise FaultError(f"{server_id} (pid {before['pid']}) did not confirm within {wait:g} s")
         time.sleep(0.05)
 
     if state["applied"] != normalize(request):
         raise FaultError(f"{server_id} is running {describe(state['applied'])}, not what was asked")
-    _record(fault_dir, {
+    record(fault_dir, {
         "t": state["applied_at"], "event": "fault_injected" if state["applied"] else "fault_cleared",
         "server": server_id, "pid": state["pid"], "fault": state["applied"],
         "previous": before["applied"], "requested_at": request["requested_at"]})

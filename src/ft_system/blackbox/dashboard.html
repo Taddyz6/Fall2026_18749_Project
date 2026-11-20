@@ -1,0 +1,590 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Black-box diagnosis</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11, 11, 11, 0.10);
+    --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --other: #898781;
+    --good: #0ca30c; --warning: #fab219; --critical: #d03b3b;
+    --lo2: #256abf; --lo1: #9ec5f4; --mid: #f0efec; --hi1: #f2a6a5; --hi2: #e34948;
+    --band3: rgba(137, 135, 129, 0.16); --band6: rgba(137, 135, 129, 0.10);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835; --border: rgba(255, 255, 255, 0.10);
+      --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+      --lo2: #5598e7; --lo1: #184f95; --mid: #383835; --hi1: #8a3534; --hi2: #e66767;
+      --band3: rgba(137, 135, 129, 0.24); --band6: rgba(137, 135, 129, 0.14);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255, 255, 255, 0.10);
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+    --lo2: #5598e7; --lo1: #184f95; --mid: #383835; --hi1: #8a3534; --hi2: #e66767;
+    --band3: rgba(137, 135, 129, 0.24); --band6: rgba(137, 135, 129, 0.14);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--ink);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1500px; margin: 0 auto; padding: 16px 20px 28px; }
+  header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
+  h1 { font-size: 18px; font-weight: 600; margin: 0; }
+  header .meta { color: var(--ink2); font-size: 12.5px; }
+  #link { margin-left: auto; color: var(--ink2); font-size: 12.5px; }
+  h2 { font-size: 13px; font-weight: 600; margin: 0 0 2px; }
+  .note { color: var(--ink2); font-size: 12px; margin: 0 0 8px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+
+  #banner { display: flex; gap: 14px; align-items: flex-start; margin-bottom: 12px; border-left-width: 6px; }
+  #banner[data-state="healthy"] { border-left-color: var(--good); }
+  #banner[data-state="fault"] { border-left-color: var(--critical); }
+  #banner[data-state="workload"] { border-left-color: var(--warning); }
+  #badge { flex: none; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center;
+           font-weight: 700; font-size: 19px; color: #ffffff; background: var(--good); }
+  #banner[data-state="fault"] #badge { background: var(--critical); }
+  #banner[data-state="workload"] #badge { background: var(--warning); color: #0b0b0b; }
+  #headline { font-size: 20px; font-weight: 600; line-height: 1.25; }
+  #detail, #advice { color: var(--ink2); font-size: 13px; margin-top: 2px; }
+  #since { margin-left: auto; flex: none; color: var(--ink2); font-size: 12.5px; text-align: right; }
+
+  #controls { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin-bottom: 10px;
+              color: var(--ink2); font-size: 12.5px; }
+  .segmented { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .segmented button { border: 0; background: transparent; color: var(--ink2); font: inherit; padding: 4px 10px;
+                      cursor: pointer; }
+  .segmented button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+  .key { display: inline-flex; align-items: center; gap: 6px; margin-right: 12px; }
+  .stroke { display: inline-block; width: 16px; height: 0; border-top: 2px solid var(--other); border-radius: 1px; }
+  .swatch { display: inline-block; width: 14px; height: 10px; border-radius: 2px; }
+  #actions { display: inline-flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+  #actions button { font: inherit; padding: 4px 10px; border-radius: 6px; cursor: pointer; color: var(--ink);
+                    border: 1px solid var(--axis); background: var(--surface); }
+  #actions button:disabled { opacity: 0.5; cursor: default; }
+
+  #layout { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+  @media (max-width: 1050px) { #layout { grid-template-columns: minmax(0, 1fr); } }
+  #charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  @media (max-width: 700px) { #charts { grid-template-columns: minmax(0, 1fr); } }
+  .chart { position: relative; }
+  .chart canvas { display: block; width: 100%; height: 200px; outline-offset: 2px; }
+  .column { display: grid; gap: 12px; }
+  #matrix-wrap { position: relative; }
+  #matrix { display: block; width: 100%; }
+  .scale { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; color: var(--ink2); font-size: 12px; }
+
+  .tip { position: absolute; z-index: 3; pointer-events: none; background: var(--surface); color: var(--ink);
+         border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px; font-size: 12px;
+         box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12); white-space: nowrap; }
+  .tip .when { color: var(--ink2); margin-bottom: 2px; }
+  .tip .row { display: flex; align-items: center; gap: 6px; }
+  .tip b { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tip span.name { color: var(--ink2); }
+
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  th, td { text-align: right; padding: 3px 8px; border-bottom: 1px solid var(--grid); font-variant-numeric: tabular-nums; }
+  th { font-weight: 600; color: var(--ink2); }
+  th:first-child, td:first-child { text-align: left; }
+  td.range { color: var(--ink2); }
+  td[data-level="2"] { background: color-mix(in srgb, var(--hi2) 28%, transparent); }
+  td[data-level="1"] { background: color-mix(in srgb, var(--hi1) 30%, transparent); }
+  td[data-level="-1"] { background: color-mix(in srgb, var(--lo1) 30%, transparent); }
+  td[data-level="-2"] { background: color-mix(in srgb, var(--lo2) 28%, transparent); }
+
+  #ft-line { font-size: 13px; }
+  #ft-line b { font-weight: 600; }
+  ol#events { list-style: none; margin: 0; padding: 0; font-size: 12.5px; max-height: 230px; overflow: auto; }
+  ol#events li { display: grid; grid-template-columns: 26px 64px 20px 1fr; gap: 4px; padding: 2px 0;
+                 border-bottom: 1px solid var(--grid); }
+  ol#events .n, ol#events .at { color: var(--ink2); font-variant-numeric: tabular-nums; }
+  ol#events .icon { font-weight: 700; text-align: center; }
+  .empty { color: var(--ink2); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Black-box failure diagnosis</h1>
+    <span class="meta" id="trained"></span>
+    <span id="link" role="status"></span>
+  </header>
+
+  <section id="banner" class="card" data-state="healthy" aria-live="polite">
+    <div id="badge" aria-hidden="true">✓</div>
+    <div>
+      <div id="headline">Waiting for data</div>
+      <div id="detail"></div>
+      <div id="advice"></div>
+    </div>
+    <div id="since"></div>
+  </section>
+
+  <div id="controls">
+    <span>Show the last</span>
+    <span class="segmented" id="window" role="group" aria-label="Time shown">
+      <button type="button" data-seconds="60">1 min</button>
+      <button type="button" data-seconds="180" aria-pressed="true">3 min</button>
+      <button type="button" data-seconds="600">10 min</button>
+    </span>
+    <span id="legend" aria-label="Legend"></span>
+    <span id="actions"></span>
+  </div>
+
+  <div id="layout">
+    <section class="column">
+      <div id="charts" aria-label="Metrics of each replica"></div>
+
+      <div class="card" id="ft-card" hidden>
+        <h2>What the fault-tolerance layer reports</h2>
+        <p class="note">From the RM and LFD logs. Shown for contrast; the diagnosis does not use it.</p>
+        <div id="ft-line"></div>
+      </div>
+
+      <div class="card">
+        <h2>Events</h2>
+        <ol id="events"></ol>
+        <div class="empty" id="no-events">Nothing has happened yet.</div>
+      </div>
+    </section>
+
+    <section class="column">
+      <div class="card">
+        <h2>Anomaly matrix</h2>
+        <p class="note">Each row is one metric of one replica; each column is one second. A fault shows as one
+          replica's rows lighting up while the others stay plain.</p>
+        <div id="matrix-wrap"><canvas id="matrix" tabindex="0" aria-label="Anomaly matrix"></canvas></div>
+        <div class="scale" id="scale"></div>
+      </div>
+
+      <div class="card">
+        <h2>Now</h2>
+        <p class="note">The latest value of each metric, with the range the signature calls normal.</p>
+        <table id="now"><thead></thead><tbody></tbody></table>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script>
+"use strict";
+const params = new URLSearchParams(location.search);
+if (params.get("theme")) document.documentElement.dataset.theme = params.get("theme");
+
+const state = { config: null, frames: [], events: [], seconds: 180, hover: null, cell: null, queued: false };
+const SERIES = ["--s1", "--s2", "--s3"];
+const LEVELS = { "-2": ["--lo2", "far below normal"], "-1": ["--lo1", "below normal"], "0": ["--mid", "normal"],
+                 "1": ["--hi1", "above normal"], "2": ["--hi2", "far above normal"] };
+const ICONS = { action: "▸", process: "↻", fault: "!", workload: "~", healthy: "✓" };
+const el = (tag, cls, text) => {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+};
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const clock = (t) => new Date(t * 1000).toLocaleTimeString([], { hour12: false });
+const fmt = (v) => v === undefined || v === null ? "–" : Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(2);
+const short = (name) => name.replace(/ \(.*\)$/, "");
+
+function labels() {
+  const seen = new Set();
+  for (const frame of state.frames) for (const label in frame.servers) seen.add(label);
+  return [...seen].sort();
+}
+function color(label) {
+  const index = labels().indexOf(label);
+  return css(index >= 0 && index < SERIES.length ? SERIES[index] : "--other");
+}
+function range() {
+  const last = state.frames.length ? state.frames[state.frames.length - 1].t : Date.now() / 1000;
+  return [last - state.seconds, last];
+}
+function visible() {
+  const [from] = range();
+  return state.frames.filter((frame) => frame.t >= from);
+}
+function nearest(t) {
+  let best = null;
+  for (const frame of visible()) if (!best || Math.abs(frame.t - t) < Math.abs(best.t - t)) best = frame;
+  return best;
+}
+
+function fit(canvas) {
+  const ratio = window.devicePixelRatio || 1;
+  const width = canvas.clientWidth, height = canvas.clientHeight;
+  if (canvas.width !== Math.round(width * ratio) || canvas.height !== Math.round(height * ratio)) {
+    canvas.width = Math.round(width * ratio);
+    canvas.height = Math.round(height * ratio);
+  }
+  const g = canvas.getContext("2d");
+  g.setTransform(ratio, 0, 0, ratio, 0, 0);
+  g.clearRect(0, 0, width, height);
+  g.font = '11px system-ui, -apple-system, "Segoe UI", sans-serif';
+  return [g, width, height];
+}
+function niceStep(span) {
+  const power = Math.pow(10, Math.floor(Math.log10(span / 4)));
+  const unit = span / 4 / power;
+  return (unit <= 1 ? 1 : unit <= 2 ? 2 : unit <= 5 ? 5 : 10) * power;
+}
+function timeAxis(g, left, right, bottom) {
+  const [from, to] = range();
+  const step = state.seconds / 6;
+  g.fillStyle = css("--muted");
+  g.textAlign = "center";
+  g.textBaseline = "top";
+  for (let back = 0; back <= state.seconds; back += step) {
+    const x = right - (back / state.seconds) * (right - left);
+    g.fillText(back === 0 ? "now" : "−" + (state.seconds > 180 ? back / 60 + " min" : back + " s"), x, bottom + 5);
+  }
+  return (t) => left + ((t - from) / (to - from)) * (right - left);
+}
+function eventRules(g, x, top, bottom, left, right, numbered) {
+  let previous = -Infinity, raised = false;
+  state.events.forEach((event, index) => {
+    const at = x(event.t);
+    if (at < left || at > right) return;
+    g.strokeStyle = css(event.group === "fault" ? "--critical" : event.group === "healthy" ? "--good"
+                        : event.group === "workload" ? "--warning" : "--ink2");
+    g.lineWidth = 1;
+    g.beginPath(); g.moveTo(at, top); g.lineTo(at, bottom); g.stroke();
+    if (numbered) {
+      raised = !raised && at - previous < 16;
+      previous = at;
+      g.fillStyle = css("--ink2");
+      g.textAlign = "center"; g.textBaseline = "bottom";
+      g.fillText(String(index + 1), at, top - (raised ? 11 : 1));
+    }
+  });
+}
+
+function drawChart(chart) {
+  const [g, width, height] = fit(chart.canvas);
+  const left = 44, right = width - 10, top = 26, bottom = height - 22;
+  const frames = visible(), band = chart.metric.band, key = chart.metric.key;
+  const values = [];
+  for (const frame of frames) for (const label in frame.servers) {
+    const v = frame.servers[label].v[key];
+    if (v !== undefined) values.push(v);
+  }
+  let low = Math.min(...values, band ? band.low6 : Infinity), high = Math.max(...values, band ? band.high6 : -Infinity);
+  if (!isFinite(low)) { low = 0; high = 1; }
+  // A metric that never comes near zero (memory) is drawn around its range, not from zero.
+  const zoomed = band && band.low6 > 0.5 * band.high6;
+  const step = niceStep((zoomed ? high - low : high) * 1.15 || 1);
+  low = zoomed ? Math.floor((low - step * 0.3) / step) * step : 0;
+  high = Math.ceil((high + step * 0.15) / step) * step;
+  const y = (v) => bottom - ((v - low) / (high - low)) * (bottom - top);
+
+  g.textAlign = "right"; g.textBaseline = "middle"; g.lineWidth = 1;
+  for (let tick = low; tick <= high + step / 2; tick += step) {
+    g.strokeStyle = css("--grid");
+    g.beginPath(); g.moveTo(left, y(tick)); g.lineTo(right, y(tick)); g.stroke();
+    g.fillStyle = css("--muted");
+    g.fillText(tick >= 1000 ? (tick / 1000).toFixed(1) + "K" : +tick.toFixed(2), left - 6, y(tick));
+  }
+  g.strokeStyle = css("--axis");
+  g.beginPath(); g.moveTo(left, bottom); g.lineTo(right, bottom); g.stroke();
+  if (band) {
+    g.fillStyle = css("--band6");
+    g.fillRect(left, y(Math.min(band.high6, high)), right - left, y(Math.max(band.low6, low)) - y(Math.min(band.high6, high)));
+    g.fillStyle = css("--band3");
+    g.fillRect(left, y(Math.min(band.high3, high)), right - left, y(Math.max(band.low3, low)) - y(Math.min(band.high3, high)));
+  }
+  const x = timeAxis(g, left, right, bottom);
+  eventRules(g, x, top, bottom, left, right, true);
+
+  g.lineWidth = 2; g.lineJoin = "round"; g.lineCap = "round";
+  for (const label of labels()) {
+    g.strokeStyle = color(label);
+    g.beginPath();
+    let previous = null, end = null;
+    for (const frame of frames) {
+      const server = frame.servers[label];
+      if (!server || server.v[key] === undefined) continue;
+      const px = x(frame.t), py = y(server.v[key]);
+      if (previous === null || frame.t - previous > 2.5) g.moveTo(px, py); else g.lineTo(px, py);
+      previous = frame.t; end = [px, py];
+    }
+    g.stroke();
+    if (end) {
+      g.fillStyle = css("--surface"); g.beginPath(); g.arc(end[0], end[1], 5.5, 0, 7); g.fill();
+      g.fillStyle = color(label); g.beginPath(); g.arc(end[0], end[1], 3.5, 0, 7); g.fill();
+    }
+  }
+
+  const tip = chart.tip;
+  const at = state.hover ? nearest(state.hover.t) : null;
+  if (!at) { tip.hidden = true; return; }
+  g.strokeStyle = css("--ink2"); g.lineWidth = 1;
+  g.beginPath(); g.moveTo(x(at.t), top); g.lineTo(x(at.t), bottom); g.stroke();
+  if (state.hover.key !== key) { tip.hidden = true; return; }
+  tip.replaceChildren(el("div", "when", clock(at.t)));
+  for (const label of labels()) {
+    const server = at.servers[label];
+    const row = el("div", "row");
+    const stroke = el("span", "stroke");
+    stroke.style.borderTopColor = color(label);
+    row.append(stroke, el("b", "", server ? fmt(server.v[key]) : "–"), el("span", "name", label));
+    tip.append(row);
+  }
+  tip.hidden = false;
+  const px = x(at.t);
+  tip.style.left = Math.max(4, Math.min(px + 12, width - tip.offsetWidth - 4)) + "px";
+  tip.style.top = (top + 4) + "px";
+}
+
+const ROW = 14, GROUP_GAP = 10, GUTTER = 190;
+function matrixRows() {
+  const rows = [];
+  labels().forEach((label, group) => state.config.matrix.forEach((metric, index) =>
+    rows.push({ label, metric, first: index === 0, y: 6 + group * (state.config.matrix.length * ROW + GROUP_GAP) + index * ROW })));
+  return rows;
+}
+function drawMatrix() {
+  const canvas = document.getElementById("matrix");
+  const rows = matrixRows();
+  canvas.style.height = (rows.length ? rows[rows.length - 1].y + ROW + 26 : 60) + "px";
+  const [g, width, height] = fit(canvas);
+  const left = GUTTER, right = width - 10, bottom = height - 22;
+  const x = timeAxis(g, left, right, bottom);
+  const cell = Math.max(1, (right - left) / state.seconds);
+  const frames = visible();
+  g.textBaseline = "middle";
+  for (const row of rows) {
+    g.textAlign = "left";
+    if (row.first) {
+      g.fillStyle = css("--ink");
+      g.font = '600 12px system-ui, -apple-system, "Segoe UI", sans-serif';
+      g.fillText(row.label, 0, row.y + ROW / 2);
+    }
+    g.font = '11px system-ui, -apple-system, "Segoe UI", sans-serif';
+    g.fillStyle = css("--ink2");
+    g.fillText(short(row.metric.name), 30, row.y + ROW / 2);
+    for (const frame of frames) {
+      const server = frame.servers[row.label];
+      const level = server ? server.level[row.metric.key] : undefined;
+      if (level === undefined) continue;
+      g.fillStyle = css(LEVELS[level][0]);
+      g.fillRect(Math.max(left, x(frame.t) - cell), row.y + 1, cell + 0.6, ROW - 2);
+    }
+  }
+  eventRules(g, x, 2, bottom, left, right, false);
+  const tip = document.getElementById("matrix-tip");
+  const hit = state.cell;
+  const row = hit ? rows.find((candidate) => hit.y >= candidate.y && hit.y < candidate.y + ROW) : null;
+  const frame = hit && hit.x >= left ? nearest(range()[0] + ((hit.x - left) / (right - left)) * state.seconds) : null;
+  const server = row && frame ? frame.servers[row.label] : null;
+  if (!server || server.level[row.metric.key] === undefined) { tip.hidden = true; return; }
+  g.strokeStyle = css("--ink"); g.lineWidth = 1;
+  g.strokeRect(x(frame.t) - cell - 0.5, row.y + 0.5, cell + 1.6, ROW - 1);
+  tip.replaceChildren(el("div", "when", clock(frame.t) + " · " + row.label + " · " + short(row.metric.name)));
+  const line = el("div", "row");
+  line.append(el("b", "", fmt(server.v[row.metric.key])), el("span", "name", LEVELS[server.level[row.metric.key]][1]));
+  tip.append(line);
+  tip.hidden = false;
+  tip.style.left = Math.max(4, Math.min(hit.x + 12, width - tip.offsetWidth - 4)) + "px";
+  tip.style.top = Math.max(0, row.y - 44) + "px";
+}
+
+function drawNow() {
+  const names = labels();
+  const frame = state.frames[state.frames.length - 1];
+  const head = el("tr");
+  head.append(el("th", "", "Metric"), el("th", "", "Normal range"), ...names.map((name) => el("th", "", name)));
+  document.querySelector("#now thead").replaceChildren(head);
+  const body = [];
+  for (const metric of state.config.matrix) {
+    const row = el("tr");
+    const band = metric.band;
+    row.append(el("td", "", short(metric.name)), el("td", "range", band ? fmt(band.low6) + " to " + fmt(band.high6) : "–"));
+    for (const name of names) {
+      const server = frame ? frame.servers[name] : null;
+      const level = server ? server.level[metric.key] : undefined;
+      const mark = { "2": " ▲▲", "1": " ▲", "-1": " ▼", "-2": " ▼▼" }[level] || "";
+      const cell = el("td", "", server ? fmt(server.v[metric.key]) + mark : "–");
+      if (level) { cell.dataset.level = level; cell.title = LEVELS[level][1]; }
+      row.append(cell);
+    }
+    body.push(row);
+  }
+  document.querySelector("#now tbody").replaceChildren(...body);
+}
+
+function drawBanner() {
+  const frame = state.frames[state.frames.length - 1];
+  if (!frame) return;
+  const status = frame.status;
+  const banner = document.getElementById("banner");
+  banner.dataset.state = status.state;
+  document.getElementById("badge").textContent = ICONS[status.state];
+  document.getElementById("headline").textContent = status.headline;
+  document.getElementById("detail").textContent = status.detail || "";
+  document.getElementById("advice").textContent = status.action ? "Suggested action: " + status.action + "." : "";
+  const costs = state.frames.slice(-60).map((recent) => recent.host && recent.host.agent_cpu).filter((cost) => cost != null);
+  document.getElementById("since").textContent = (status.since ? "since " + clock(status.since) : "") +
+    (costs.length ? "\nmonitor cost " + (costs.reduce((sum, cost) => sum + cost, 0) / costs.length).toFixed(1) + "% of one core" : "");
+  document.getElementById("since").style.whiteSpace = "pre-line";
+  const card = document.getElementById("ft-card");
+  card.hidden = !frame.ft;
+  if (frame.ft) {
+    const line = document.getElementById("ft-line");
+    line.replaceChildren("Members: ", el("b", "", frame.ft.members.join(", ") || "none"), " · ready: ",
+      el("b", "", frame.ft.ready.join(", ") || "none"), " · heartbeat timeouts in the last minute: ",
+      el("b", "", String(frame.ft.timeouts)));
+  }
+}
+function drawEvents() {
+  const list = document.getElementById("events");
+  const items = state.events.map((event, index) => {
+    const item = el("li");
+    item.append(el("span", "n", "#" + (index + 1)), el("span", "at", clock(event.t)),
+                el("span", "icon", ICONS[event.group] || "·"), el("span", "", event.text));
+    return item;
+  }).reverse().slice(0, 40);
+  list.replaceChildren(...items);
+  document.getElementById("no-events").hidden = items.length > 0;
+}
+function drawLegend() {
+  const legend = document.getElementById("legend");
+  const keys = labels().map((label) => {
+    const key = el("span", "key");
+    const stroke = el("span", "stroke");
+    stroke.style.borderTopColor = color(label);
+    key.append(stroke, el("span", "", label));
+    return key;
+  });
+  const band = el("span", "key");
+  const swatch = el("span", "swatch");
+  swatch.style.background = css("--band3");
+  band.append(swatch, el("span", "", "normal range"));
+  legend.replaceChildren(...keys, band);
+}
+
+function render() {
+  state.queued = false;
+  if (!state.config) return;
+  drawBanner(); drawLegend();
+  for (const chart of state.charts) drawChart(chart);
+  drawMatrix(); drawNow(); drawEvents();
+}
+function schedule() {
+  if (!state.queued) { state.queued = true; requestAnimationFrame(render); }
+}
+
+function build() {
+  const holder = document.getElementById("charts");
+  state.charts = state.config.charts.map((metric) => {
+    const card = el("div", "card chart");
+    const band = metric.band;
+    card.append(el("h2", "", metric.name),
+                el("p", "note", band ? "Normal: " + fmt(band.low6) + " to " + fmt(band.high6) : "No signature for this metric"));
+    const canvas = el("canvas");
+    canvas.tabIndex = 0;
+    canvas.setAttribute("aria-label", metric.name + " of each replica over time");
+    const tip = el("div", "tip");
+    tip.hidden = true;
+    card.append(canvas, tip);
+    holder.append(card);
+    const point = (event) => {
+      const box = canvas.getBoundingClientRect();
+      const [from] = range();
+      state.hover = { key: metric.key, t: from + ((event.clientX - box.left - 44) / (box.width - 54)) * state.seconds };
+      schedule();
+    };
+    canvas.addEventListener("pointermove", point);
+    canvas.addEventListener("pointerleave", () => { state.hover = null; schedule(); });
+    canvas.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      const last = range()[1];
+      const t = (state.hover && state.hover.key === metric.key ? state.hover.t : last) + (event.key === "ArrowLeft" ? -1 : 1);
+      state.hover = { key: metric.key, t: Math.min(last, Math.max(last - state.seconds, t)) };
+      event.preventDefault(); schedule();
+    });
+    canvas.addEventListener("blur", () => { state.hover = null; schedule(); });
+    return { metric, canvas, tip };
+  });
+  const tip = el("div", "tip");
+  tip.id = "matrix-tip"; tip.hidden = true;
+  document.getElementById("matrix-wrap").append(tip);
+  const matrix = document.getElementById("matrix");
+  matrix.addEventListener("pointermove", (event) => {
+    const box = matrix.getBoundingClientRect();
+    state.cell = { x: event.clientX - box.left, y: event.clientY - box.top };
+    schedule();
+  });
+  matrix.addEventListener("pointerleave", () => { state.cell = null; schedule(); });
+  document.getElementById("scale").replaceChildren(...[-2, -1, 0, 1, 2].map((level) => {
+    const key = el("span", "key");
+    const swatch = el("span", "swatch");
+    swatch.style.background = css(LEVELS[level][0]);
+    key.append(swatch, el("span", "", LEVELS[level][1]));
+    return key;
+  }));
+  for (const button of document.querySelectorAll("#window button")) {
+    button.addEventListener("click", () => {
+      state.seconds = Number(button.dataset.seconds);
+      for (const other of document.querySelectorAll("#window button")) other.setAttribute("aria-pressed", String(other === button));
+      schedule();
+    });
+  }
+  const trained = state.config.trained;
+  document.getElementById("trained").textContent = "Signature trained on " + (trained.host || "?") +
+    " with " + (trained.config || "?") + ", one request every " + (trained.client_interval || "?") + " s per client";
+  const actions = document.getElementById("actions");
+  for (const name of state.config.actions) {
+    const button = el("button", "", name);
+    button.type = "button";
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      const reply = await fetch("action/" + encodeURIComponent(name), { method: "POST", headers: { "X-Dashboard": "1" } });
+      if (!reply.ok) document.getElementById("link").textContent = name + ": " + await reply.text();
+      button.disabled = false;
+    });
+    actions.append(button);
+  }
+  window.addEventListener("resize", schedule);
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", schedule);
+}
+
+function accept(message) {
+  if (message.type === "frame") {
+    const last = state.frames[state.frames.length - 1];
+    if (last && message.frame.t <= last.t) return;       // already in the snapshot
+    state.frames.push(message.frame);
+    if (state.frames.length > 900) state.frames.shift();
+  } else if (message.type === "event") {
+    if (state.events.some((event) => event.t === message.event.t && event.text === message.event.text)) return;
+    state.events.push(message.event);
+  }
+  schedule();
+}
+async function boot() {
+  const link = document.getElementById("link");
+  const waiting = [];
+  let ready = false;
+  if (!params.has("static")) {
+    const stream = new EventSource("stream");
+    stream.onmessage = (event) => { const message = JSON.parse(event.data); if (ready) accept(message); else waiting.push(message); };
+    stream.onopen = () => { link.textContent = "live"; };
+    stream.onerror = () => { link.textContent = "connection lost; retrying"; };
+  }
+  const snapshot = await (await fetch("snapshot")).json();
+  state.config = snapshot; state.frames = snapshot.frames; state.events = snapshot.events;
+  build();
+  ready = true;
+  waiting.forEach(accept);
+  render();
+}
+boot();
+</script>
+</body>
+</html>
