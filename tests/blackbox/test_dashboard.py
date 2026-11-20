@@ -158,7 +158,7 @@ def test_snapshot_describes_the_charts_and_their_normal_ranges(board):
                            "high6": pytest.approx(14.0, abs=0.1)}
     assert missing["band"] is None                                 # the synthetic run has no context switches
     assert snapshot["trained"] == {"host": "pc", "config": "m5.toml", "client_interval": 0.2}
-    assert (snapshot["actions"], snapshot["frames"], snapshot["events"]) == ([], [], [])
+    assert (snapshot["actions"], snapshot["controls"], snapshot["frames"], snapshot["events"]) == ([], {}, [], [])
 
 
 async def ask(port, text, body=b""):
@@ -177,7 +177,9 @@ async def test_page_snapshot_and_actions_are_served_over_http(signature):
     def refuse(argument):
         raise RuntimeError("S2 is not running")
 
-    board = Dashboard(signature, Diagnoser(signature, PAPER),
+    controls = {"buttons": [{"label": "Inject fault", "action": "inject", "target": True}], "targets": ["S1", "S2"],
+                "default": "S2"}
+    board = Dashboard(signature, Diagnoser(signature, PAPER), controls=controls,
                       actions={"inject": lambda argument: pressed.append(argument) or "started", "kill": refuse})
     server = await board.start("127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
@@ -188,6 +190,7 @@ async def test_page_snapshot_and_actions_are_served_over_http(signature):
 
         status, payload = await ask(port, "GET /snapshot HTTP/1.1")
         assert status == 200 and json.loads(payload)["actions"] == ["inject", "kill"]
+        assert json.loads(payload)["controls"] == controls
 
         assert (await ask(port, "GET /elsewhere HTTP/1.1"))[0] == 404
         assert (await ask(port, "POST /action/inject HTTP/1.1\r\nContent-Length: 2", b"S2"))[0] == 403

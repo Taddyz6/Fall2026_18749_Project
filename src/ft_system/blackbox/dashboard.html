@@ -69,6 +69,9 @@
   #actions button { font: inherit; padding: 4px 10px; border-radius: 6px; cursor: pointer; color: var(--ink);
                     border: 1px solid var(--axis); background: var(--surface); }
   #actions button:disabled { opacity: 0.5; cursor: default; }
+  #actions select { font: inherit; padding: 3px 6px; border-radius: 6px; color: var(--ink);
+                    border: 1px solid var(--axis); background: var(--surface); }
+  #said { min-height: 18px; margin: -4px 0 8px; text-align: right; color: var(--ink2); font-size: 12.5px; }
 
   #layout { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 12px; align-items: start; }
   @media (max-width: 1050px) { #layout { grid-template-columns: minmax(0, 1fr); } }
@@ -137,6 +140,7 @@
     <span id="legend" aria-label="Legend"></span>
     <span id="actions"></span>
   </div>
+  <div id="said" role="status"></div>
 
   <div id="layout">
     <section class="column">
@@ -540,13 +544,33 @@ function build() {
   document.getElementById("trained").textContent = "Signature trained on " + (trained.host || "?") +
     " with " + (trained.config || "?") + ", one request every " + (trained.client_interval || "?") + " s per client";
   const actions = document.getElementById("actions");
-  for (const name of state.config.actions) {
-    const button = el("button", "", name);
+  const controls = state.config.controls || {};
+  const buttons = controls.buttons || [];
+  let target = null;
+  if (buttons.some((spec) => spec.target)) {
+    target = el("select");
+    target.setAttribute("aria-label", "Replica the buttons act on");
+    for (const name of controls.targets || []) {
+      const option = el("option", "", name);
+      option.selected = name === controls.default;
+      target.append(option);
+    }
+    actions.append(target);
+  }
+  for (const spec of buttons) {
+    const button = el("button", "", spec.label);
     button.type = "button";
     button.addEventListener("click", async () => {
+      const said = document.getElementById("said");
       button.disabled = true;
-      const reply = await fetch("action/" + encodeURIComponent(name), { method: "POST", headers: { "X-Dashboard": "1" } });
-      if (!reply.ok) document.getElementById("link").textContent = name + ": " + await reply.text();
+      said.textContent = spec.label + "…";
+      try {
+        const reply = await fetch("action/" + encodeURIComponent(spec.action), {
+          method: "POST", headers: { "X-Dashboard": "1" }, body: spec.target ? target.value : spec.argument || "" });
+        said.textContent = (reply.ok ? "" : "Not done: ") + await reply.text();
+      } catch (error) {
+        said.textContent = "Not done: the dashboard did not answer";
+      }
       button.disabled = false;
     });
     actions.append(button);

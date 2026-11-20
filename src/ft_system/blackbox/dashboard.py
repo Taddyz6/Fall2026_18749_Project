@@ -121,13 +121,17 @@ class Dashboard:
 
     ``run_dir`` is where the events file and the system's logs are, when this runs
     beside a live system on the same computer. ``actions`` maps a name to a function
-    taking one text argument; the page shows a button for each.
+    taking one text argument. ``controls`` tells the page which buttons to show:
+    ``{"buttons": [{"label", "action", "argument" or "target": True}], "targets": [...],
+    "default": ...}``; a button with ``target`` sends the replica chosen on the page.
     """
 
     def __init__(self, signature: Signature, diagnoser: Diagnoser, run_dir: Path | None = None,
-                 actions: Mapping[str, Callable[[str], str]] | None = None, role: str = "server") -> None:
+                 actions: Mapping[str, Callable[[str], str]] | None = None,
+                 controls: Mapping | None = None, role: str = "server") -> None:
         self.signature, self.diagnoser, self.role = signature, diagnoser, role
         self.actions = dict(actions or {})
+        self.controls = dict(controls or {})
         self.frames: deque[dict] = deque(maxlen=HISTORY)
         self.events: deque[dict] = deque(maxlen=300)
         self.status = {"state": HEALTHY, "headline": "Normal",
@@ -164,7 +168,8 @@ class Dashboard:
         if record.get("event") == "diagnosis":
             self.status = {"state": record["status"], "headline": record["headline"],
                            "detail": record["detail"], "action": record.get("action"),
-                           "culprit": record.get("culprit"), "since": record["t"]}
+                           "culprit": record.get("culprit"), "cause": record.get("cause"),
+                           "since": record["t"]}
         shown = describe(record)
         if shown is not None:
             self.events.append(shown)
@@ -204,7 +209,8 @@ class Dashboard:
 
         return {"charts": [metric(key) for key in CHARTS], "matrix": [metric(key) for key in MATRIX],
                 "trained": {key: self.signature.meta.get(key) for key in ("host", "config", "client_interval")},
-                "actions": sorted(self.actions), "frames": list(self.frames), "events": list(self.events)}
+                "actions": sorted(self.actions), "controls": self.controls,
+                "frames": list(self.frames), "events": list(self.events)}
 
     def _send(self, message: dict) -> None:
         for queue in list(self._listeners):

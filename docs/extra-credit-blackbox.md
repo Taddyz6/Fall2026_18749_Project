@@ -11,10 +11,23 @@ file is changed, and nothing in M5 imports this code.
 | 3. Normal signature | Built and tested on Windows |
 | 4. Detection and diagnosis | Built and tested on Windows |
 | 5. Live dashboard | Built and tested on Windows |
-| One-command launcher, recovery step, evaluation | Not built yet |
+| 6. One-command launcher and unattended demo | Built and tested on Windows |
+| Automatic recovery, reply-time panel, per-thread view, evaluation | Not built yet |
 
-The commands below assume the repository root as the working directory and that
-`ft_system` is importable (an editable install, or `PYTHONPATH=src`).
+## Quick start
+
+From the repository root, with `psutil` installed:
+
+```bash
+python scripts/ec_run.py train        # once per computer: records 5 fault-free minutes and learns normal
+python scripts/ec_run.py up           # starts everything; open http://127.0.0.1:8750/
+python scripts/ec_run.py autopilot    # or: runs the whole demo unattended and checks each step
+```
+
+Section 6 describes these. The other sections explain each part and can be
+run on their own; their commands assume the repository root as the working
+directory and that `ft_system` is importable (an editable install, or
+`PYTHONPATH=src`). The scripts under `scripts/` find the package themselves.
 
 ## 1. Fault injector
 
@@ -472,17 +485,91 @@ injection and back to "Normal" 10 s after the fault was cleared. Throughout,
 the fault-tolerance panel showed three members, three ready and no heartbeat
 timeouts.
 
+## 6. Running the demo
+
+[`scripts/ec_run.py`](../scripts/ec_run.py) runs everything on one computer
+([`session.py`](../src/ft_system/blackbox/session.py) holds the logic).
+
+```bash
+python scripts/ec_run.py train                 # record a fault-free run and train the signature
+python scripts/ec_run.py up                    # start everything and keep it running
+python scripts/ec_run.py autopilot             # start, run the scripted demo with checks, stop
+python scripts/ec_run.py autopilot --rounds 3  # the same, three times
+```
+
+`up` starts the RM, the GFD, the three LFDs with their servers and three
+clients, then the agent, and runs the collector, the diagnosis and the
+dashboard in its own process. Train first: `up` refuses to start without a
+signature. `--profile fast` after `up` or `autopilot` selects the faster
+detection windows.
+
+### Doing things to the running system
+
+Use the buttons on the page, or the same actions from another terminal:
+
+```bash
+python scripts/ec_run.py inject S2             # start the CPU fault in S2 at 0.75
+python scripts/ec_run.py inject S2 --duty 0.5
+python scripts/ec_run.py clear S2
+python scripts/ec_run.py load 6                # run 6 clients instead of 3
+python scripts/ec_run.py load 3
+python scripts/ec_run.py rejuvenate            # kill the diagnosed replica; the RM relaunches it
+python scripts/ec_run.py rejuvenate S1         # or a named one
+python scripts/ec_run.py down                  # stop everything
+```
+
+Each action is recorded in `events.jsonl`, whichever way it was started.
+
+- **Restarting a replica is refused unless every replica is ready.** Recovery
+  must never take the group below two working replicas.
+- **The load can be doubled three times per session.** Doubling starts spare
+  clients, and a spare cannot be reused (section 2). After that, restart the
+  session.
+- **`down` always cleans up.** If no session answers, it kills every process of
+  the system and the monitor that it finds on this computer, including ones you
+  started by hand.
+
+### The unattended demo
+
+`autopilot` runs the demo script and stops with an error if a step does not go
+as expected:
+
+1. Wait until every replica is reporting and inside its normal range.
+2. Double the client load. Expect a workload change with no replica blamed.
+   Return to the normal load and expect "Normal" again.
+3. Inject the fault into S2. Expect S2 to be diagnosed with a CPU-intensive
+   task, while the RM still reports three ready replicas and the LFDs report
+   no heartbeat timeout.
+4. Restart S2. Expect it to be relaunched as a new process without the fault,
+   ready, and inside its normal range.
+5. Wait 15 s and expect it to still be normal.
+
+### Measured
+
+Three rounds in a row on Nov 20 (Windows), all passed. Each took about 70 s, or 86 s with starting and stopping:
+
+| Step | Round 1 | Round 2 | Round 3 |
+| --- | --- | --- | --- |
+| Load change reported, nobody blamed | 10.0 s | 9.9 s | 9.9 s |
+| Fault in S2 diagnosed | 9.9 s | 9.8 s | 9.8 s |
+| S2 relaunched, ready and normal after being killed | 8.0 s | 7.8 s | 7.0 s |
+
+After each round no process of the system or the monitor was left running.
+After a session's launcher was killed without cleanup, `down` removed the 12
+processes it left behind.
+
 ## Tests
 
 ```bash
 python -m pytest tests/blackbox -q
 ```
 
-137 tests. They cover the fault injector (in a stand-in process that takes
+144 tests. They cover the fault injector (in a stand-in process that takes
 `--server-id`), discovery, the agent (against stand-in processes with component
 command lines), the collector, the signature, each detection and blame rule on
 synthetic series, the diagnosis on synthetic recorded runs, the figures, and
-the dashboard's frames and HTTP routes. The agent tests are skipped where
-`psutil` is not installed, and the figure tests where `matplotlib` is not. The
-page itself was checked by eye in a headless browser, in both themes and with
-the pointer over a chart and a matrix cell.
+the dashboard's frames and HTTP routes, and the session's actions and client
+load changes with stand-in processes. The agent and session tests are skipped
+where `psutil` is not installed, and the figure tests where `matplotlib` is
+not. The page itself was checked by eye in a headless browser, in both themes,
+with the pointer over a chart and a matrix cell, and by pressing a button.

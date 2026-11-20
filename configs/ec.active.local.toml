@@ -1,6 +1,8 @@
-# Extra credit (black-box diagnosis): m5.active.local.toml plus three spare clients.
-# C1-C3 run from the start, as in the M5 demo. C4-C6 are started only to raise the
-# client load during a run, to show that a change every replica shares is not a fault.
+# Extra credit (black-box diagnosis): m5.active.local.toml plus nine spare clients.
+# C1-C3 run from the start, as in the M5 demo. The spares are started only to raise
+# the client load during a run, to show that a change every replica shares is not a
+# fault. A spare is used once: restarted, it would number its requests from 1 again
+# and the servers would take them for duplicates. Nine spares allow three doublings.
 
 [rm]
 bind_host = "127.0.0.1"
@@ -72,6 +74,36 @@ connect_timeout = 1.0
 read_timeout = 2.0
 
 [client.C6]
+server_ids = ["S1", "S2", "S3"]
+connect_timeout = 1.0
+read_timeout = 2.0
+
+[client.C7]
+server_ids = ["S1", "S2", "S3"]
+connect_timeout = 1.0
+read_timeout = 2.0
+
+[client.C8]
+server_ids = ["S1", "S2", "S3"]
+connect_timeout = 1.0
+read_timeout = 2.0
+
+[client.C9]
+server_ids = ["S1", "S2", "S3"]
+connect_timeout = 1.0
+read_timeout = 2.0
+
+[client.C10]
+server_ids = ["S1", "S2", "S3"]
+connect_timeout = 1.0
+read_timeout = 2.0
+
+[client.C11]
+server_ids = ["S1", "S2", "S3"]
+connect_timeout = 1.0
+read_timeout = 2.0
+
+[client.C12]
 server_ids = ["S1", "S2", "S3"]
 connect_timeout = 1.0
 read_timeout = 2.0

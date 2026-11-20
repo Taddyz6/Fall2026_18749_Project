@@ -87,6 +87,7 @@ class LocalCluster:
         self.servers = tuple(self.config.servers)
         self.client_ids = tuple(self.config.clients)
         self.clients = len(self.client_ids) if clients is None else clients  # how many run at the start
+        self._base: tuple[str, ...] = ()  # the clients that run for the whole session
         self.lfd_of = {lfd.server_id: lfd_id for lfd_id, lfd in self.config.lfds.items()}
         self._processes: dict[str, subprocess.Popen] = {}
 
@@ -147,30 +148,38 @@ class LocalCluster:
                              shim=True)
                 self.wait_ready(self.servers[:count])
             self.set_clients(self.clients)
+            self._base = self.client_ids[:self.clients]
         except BaseException:
             self.stop()
             raise
 
-    def set_clients(self, count: int) -> None:
-        """Run exactly the first ``count`` configured clients: start or stop the rest.
+    def running_clients(self) -> list[str]:
+        return [client_id for client_id in self.client_ids
+                if client_id in self._processes and self._processes[client_id].poll() is None]
 
-        A stopped client must not be started again in the same run: it would number its
-        requests from 1 again, and the servers would take them for duplicates.
+    def set_clients(self, count: int) -> None:
+        """Change how many clients run: start spare ones that have not run yet, or stop spares.
+
+        A client is never started twice in one session: it would number its requests
+        from 1 again, and the servers would take them for duplicates. The clients that
+        ran from the start are never stopped.
         """
 
-        if not 0 <= count <= len(self.client_ids):
-            raise ClusterError(f"the config has {len(self.client_ids)} clients; cannot run {count}")
-        for position, client_id in enumerate(self.client_ids):
-            process = self._processes.get(client_id)
-            running = process is not None and process.poll() is None
-            if position < count and not running:
-                if process is not None:
-                    raise ClusterError(f"{client_id} already ran once in this run")
+        running = self.running_clients()
+        if count > len(running):
+            unused = [client_id for client_id in self.client_ids if client_id not in self._processes]
+            if count - len(running) > len(unused):
+                raise ClusterError(f"only {len(unused)} unused spare clients are left in this session; "
+                                   f"cannot run {count}")
+            for client_id in unused[:count - len(running)]:
                 self._launch(client_id, "ft_system.client.main", "--client-id", client_id,
                              "--interval", str(self.client_interval))
-            elif position >= count and running:
-                kill_tree(process.pid)
-        self.clients = count
+        else:
+            spares = [client_id for client_id in running if client_id not in self._base]
+            if len(running) - count > len(spares):
+                raise ClusterError(f"cannot run fewer than the {len(self._base)} clients the session started with")
+            for client_id in spares[count - len(running):] if count < len(running) else ():
+                kill_tree(self._processes[client_id].pid)
 
     def replica_pid(self, server_id: str) -> int | None:
         """PID of the running server process, as its shim registered it."""
@@ -200,3 +209,20 @@ class LocalCluster:
         for process in component_processes():
             if str(self.config_path) in (process.info["cmdline"] or ()):
                 kill_tree(process.pid)
+
+
+def sweep() -> list[int]:
+    """Kill every process of the system and of the monitor on this computer; return their PIDs.
+
+    For cleaning up after a session that did not shut down. It does not ask whose they are.
+    """
+
+    monitor = ("ft_system.blackbox.agent", "ft_system.blackbox.collector")
+    found = component_processes()
+    for process in psutil.process_iter(["cmdline"]):
+        command = process.info["cmdline"] or ()
+        if "-m" in command and any(argument in monitor for argument in command):
+            found.append(process)
+    for process in found:
+        kill_tree(process.pid)
+    return [process.pid for process in found]
