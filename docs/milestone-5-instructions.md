@@ -76,9 +76,31 @@ On **A**, start RM first, then GFD:
 .venv/bin/python -m ft_system.gfd.main --config configs/m5.active.distributed.toml
 ```
 
-Check `RM: 0 members`, `GFD: 0 members`, and GFD's notification of RM. From B/C/D,
-`nc -vz 192.168.1.10 7300` and `nc -vz 192.168.1.10 7200` can check connectivity
-to the running listeners (substitute A's actual address).
+**On A**, check for `RM: 0 members`, `GFD: 0 members`, and GFD's notification of RM.
+Leave both processes running. In A's network settings, open the Wi-Fi or Ethernet
+connection used for the demo and find its IPv4 address. It should match
+`advertised_host` in both the `[rm]` and `[gfd]` sections of the shared config.
+Give that address to the people on B, C and D.
+
+**On B, C and D**, each person can open a terminal on their own computer before
+starting the LFD and check whether it can reach A. If A reports `192.168.1.42`,
+each person runs the two commands below. If A reports a different address, use
+that address in both commands. The first checks RM on port 7300 and the second
+checks GFD on port 7200.
+
+```bash
+nc -vz 192.168.1.42 7300
+nc -vz 192.168.1.42 7200
+```
+
+`nc -vz` attempts a TCP connection and prints the result.
+
+- If both commands report `succeeded` or `open`, that computer can reach both
+  services on A. Continue with the LFD startup order below.
+- If one reports `Connection refused`, ask the person on A to check the corresponding
+  process. For example, if only 7200 is refused, check A's GFD terminal first.
+- If a command reports `timed out`, check the IP you entered, then check that
+  the demo network and A's firewall allow connections to that port.
 
 On **B**, start LFD1; it will receive an RM command and launch S1 automatically:
 

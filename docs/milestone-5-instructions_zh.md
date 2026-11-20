@@ -69,9 +69,24 @@ python3 -m venv .venv
 .venv/bin/python -m ft_system.gfd.main --config configs/m5.active.distributed.toml
 ```
 
-确认 `RM: 0 members`、`GFD: 0 members`，以及 GFD 已通知 RM。从 B/C/D 可用
-`nc -vz 192.168.1.10 7300` 和 `nc -vz 192.168.1.10 7200` 检查已启动的监听端口，
-其中地址替换成 A 的实际地址。
+**A 的同学**确认两个窗口分别显示 `RM: 0 members` 和 `GFD: 0 members`，并看到 GFD 已通知 RM。
+保持这两个进程运行。在 A 的网络设置中打开演示用的 Wi-Fi 或有线连接，查看 IPv4 地址，核对它与共享配置中
+`[rm]`、`[gfd]` 的 `advertised_host` 一致，再把这个地址告诉 B、C、D。
+
+**B、C、D 的同学**可以在启动 LFD 前，各自在自己的电脑上打开一个终端，检查能否连到 A。
+假设 A 报的地址是 `192.168.1.42`，每个人都运行下面两行。如果 A 报的是其他地址，
+就把两行里的 `192.168.1.42` 都换成 A 报的地址。第一行连 RM（7300），第二行连 GFD（7200）。
+
+```bash
+nc -vz 192.168.1.42 7300
+nc -vz 192.168.1.42 7200
+```
+
+`nc -vz` 会尝试建立一次 TCP 连接，并打印结果。
+
+- 两行都显示 `succeeded` 或 `open`，说明当前这台电脑能连到 A 上的两个服务。接下来按下文顺序启动 LFD。
+- 若某一行显示 `Connection refused`，请 A 的同学检查对应进程是否正在运行。例如只有 7200 被拒绝，就先看 A 的 GFD 窗口。
+- 若显示 `timed out`，先确认命令里的 IP 与 A 报的一致，再检查演示网络和 A 的防火墙是否允许连接该端口。
 
 在 **B** 启动 LFD1；收到 RM 指令后，它会自动启动 S1：
 
