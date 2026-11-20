@@ -8,9 +8,10 @@ Then open http://127.0.0.1:8750/. The page is one self-contained file, so it
 needs no internet. The server sends one frame a second over server-sent events.
 
 Beside the diagnosis the page shows what the fault-tolerance layer itself
-reports (the RM's view and LFD heartbeat timeouts, read from their logs when
-they are in the run directory). That is for contrast only: the diagnosis never
-reads it. Standard library only.
+reports (the RM's view and LFD heartbeat timeouts) and what clients experience
+(reply times), both read from the system's logs when they are in the run
+directory. Those are for contrast only: the diagnosis never reads them.
+Standard library only.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import argparse
 import asyncio
 import json
 import re
+import statistics
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -39,10 +41,15 @@ MATRIX = ("cpu", "cpu_user", "cpu_sys", "ctx_voluntary_s", "io_write_count_s", "
           "rss_mb", "threads")
 HISTORY = 900          # frames kept for a page that opens late: 15 minutes
 TIMEOUT_WINDOW = 60.0  # seconds over which heartbeat timeouts are counted
+REPLY_WINDOW = 5.0     # seconds of client replies behind each reply-time point
+REPLY = {"key": "reply_ms", "name": "Client reply time (ms)", "band": None, "wide": True,
+         "note": "Median over the last 5 s, from the client logs. This is what the fault does to the "
+                 "service; the diagnosis does not use it."}
 # Things done to the system on purpose. They are written to the events file by
 # whoever did them, not sent through the collector.
 GROUND_TRUTH = ("fault_injected", "fault_cleared", "replica_killed", "load_changed")
 _VIEW = re.compile(r"RM: view \d+: members: (.*?); ready: (.*)")
+_MESSAGE = re.compile(r"(Sending|Received) <(\w+), (\w+), (\d+), (?:request|reply)>$")
 
 
 def describe(record: Mapping) -> dict | None:
@@ -57,7 +64,7 @@ def describe(record: Mapping) -> dict | None:
     elif kind == "fault_cleared":
         group, text = "action", f"fault cleared in {who}"
     elif kind == "replica_killed":
-        group, text = "action", f"{who} killed"
+        group, text = "action", f"{who} killed" + (f" ({record['reason']})" if record.get("reason") else "")
     elif kind == "load_changed":
         group, text = "action", f"client count set to {record.get('clients')}"
     elif kind == "process_exited" and record.get("role") == "server":
@@ -116,6 +123,41 @@ class LogWatcher:
         return {"members": self.members, "ready": self.ready, "timeouts": len(self._timeouts)}
 
 
+class ReplyWatcher:
+    """How long each replica takes to answer, as the clients' logs show it."""
+
+    def __init__(self, folder: Path) -> None:
+        self.folder = folder
+        self._clients: dict[Path, Tail] = {}
+        self._sent: dict[tuple[str, str, str], float] = {}
+        self._replies: dict[str, deque[tuple[float, float]]] = {}  # server -> (when answered, milliseconds)
+
+    def poll(self, now: float) -> dict[str, float]:
+        """Median reply time per replica over the last few seconds, in milliseconds."""
+
+        for path in self.folder.glob("C*.log"):
+            tail = self._clients.setdefault(path, Tail(path))
+            for stamp, text in impact.timed_lines("\n".join(tail.lines())):
+                match = _MESSAGE.match(text)
+                if not match:
+                    continue
+                action, key = match.group(1), match.groups()[1:]
+                if action == "Sending":
+                    self._sent[key] = stamp
+                elif key in self._sent:
+                    took = (stamp - self._sent.pop(key)) * 1000
+                    self._replies.setdefault(key[1], deque()).append((stamp, took))
+        # A request that is never answered would stay here for ever.
+        self._sent = {key: sent for key, sent in self._sent.items() if now - sent < 60}
+        medians = {}
+        for server, replies in self._replies.items():
+            while replies and now - replies[0][0] > REPLY_WINDOW:
+                replies.popleft()
+            if replies:
+                medians[server] = round(statistics.median(took for _, took in replies), 1)
+        return medians
+
+
 class Dashboard:
     """Turns the records it is given into one frame a second, and serves the page.
 
@@ -124,14 +166,18 @@ class Dashboard:
     taking one text argument. ``controls`` tells the page which buttons to show:
     ``{"buttons": [{"label", "action", "argument" or "target": True}], "targets": [...],
     "default": ...}``; a button with ``target`` sends the replica chosen on the page.
+    ``extra`` is called for each frame and its result sent along as ``session``: whatever
+    the host of this dashboard wants the page to know.
     """
 
     def __init__(self, signature: Signature, diagnoser: Diagnoser, run_dir: Path | None = None,
                  actions: Mapping[str, Callable[[str], str]] | None = None,
-                 controls: Mapping | None = None, role: str = "server") -> None:
+                 controls: Mapping | None = None, extra: Callable[[], Mapping] | None = None,
+                 role: str = "server") -> None:
         self.signature, self.diagnoser, self.role = signature, diagnoser, role
         self.actions = dict(actions or {})
         self.controls = dict(controls or {})
+        self.extra = extra
         self.frames: deque[dict] = deque(maxlen=HISTORY)
         self.events: deque[dict] = deque(maxlen=300)
         self.status = {"state": HEALTHY, "headline": "Normal",
@@ -140,8 +186,14 @@ class Dashboard:
         self._listeners: set[asyncio.Queue] = set()
         self._truth = Tail(Path(run_dir) / EVENTS_FILE) if run_dir else None
         self._logs = LogWatcher(Path(run_dir)) if run_dir else None
+        self._replies = ReplyWatcher(Path(run_dir)) if run_dir else None
 
     # --- records in ---
+
+    def latest(self, label: str) -> Mapping | None:
+        """The newest sample of one replica, as the agent reported it."""
+
+        return self._latest.get(label)
 
     def observe(self, record: Mapping) -> None:
         if "event" in record:
@@ -177,6 +229,7 @@ class Dashboard:
 
     def _frame(self, now: float, host: Mapping) -> dict:
         servers = {}
+        replies = self._replies.poll(now) if self._replies else {}
         for label, sample in sorted(self._latest.items()):
             if now - when(sample) > STALE_SECONDS:
                 continue  # silent: the page shows a gap, as the diagnosis leaves it out
@@ -184,13 +237,15 @@ class Dashboard:
             tracks = detector.tracks if detector is not None else {}
             servers[label] = {
                 "age": sample.get("age"), "incarnation": sample.get("incarnation"),
-                "v": {metric: sample["m"][metric] for metric in MATRIX if metric in sample["m"]},
+                "v": {metric: sample["m"][metric] for metric in MATRIX if metric in sample["m"]}
+                     | ({REPLY["key"]: replies[label]} if label in replies else {}),
                 "level": {metric: tracks[metric].levels[-1] for metric in MATRIX
                           if metric in tracks and tracks[metric].levels},
             }
         return {"t": round(now, 3), "servers": servers, "status": self.status,
                 "ft": self._logs.poll(now) if self._logs else None,
-                "host": {name: host["m"].get(name) for name in ("cpu", "agent_cpu")}}
+                "host": {name: host["m"].get(name) for name in ("cpu", "agent_cpu")},
+                "session": dict(self.extra()) if self.extra else None}
 
     # --- page out ---
 
@@ -207,7 +262,8 @@ class Dashboard:
                         for sigmas in (WARN_SIGMAS, ANOMALY_SIGMAS) for side, sign in (("low", -1), ("high", 1))}
             return {"key": key, "name": METRIC_NAMES.get(key, key), "band": band}
 
-        return {"charts": [metric(key) for key in CHARTS], "matrix": [metric(key) for key in MATRIX],
+        return {"charts": [metric(key) for key in CHARTS] + ([REPLY] if self._replies else []),
+                "matrix": [metric(key) for key in MATRIX],
                 "trained": {key: self.signature.meta.get(key) for key in ("host", "config", "client_interval")},
                 "actions": sorted(self.actions), "controls": self.controls,
                 "frames": list(self.frames), "events": list(self.events)}

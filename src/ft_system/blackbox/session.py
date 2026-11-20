@@ -17,6 +17,8 @@ import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 
+import psutil
+
 from ft_system.blackbox import collector
 from ft_system.blackbox.cluster import ClusterError, LocalCluster, kill_tree, launch
 from ft_system.blackbox.collector import Store
@@ -25,23 +27,38 @@ from ft_system.blackbox.dashboard import Dashboard
 from ft_system.blackbox.diagnose import and_join
 from ft_system.blackbox.faults import ctl
 from ft_system.blackbox.fingerpoint import FAULT, HEALTHY, WORKLOAD
+from ft_system.blackbox.recover import RecoveryPolicy
 from ft_system.common.logging import EventLogger
 
 DEFAULT_CONFIG = "configs/ec.active.local.toml"
 DEFAULT_TARGET = "S2"
 DEMO_DUTY = 0.75  # busy fraction of the injected fault: plainly slow, yet no heartbeat is missed
+THREADS_SHOWN = 6
+
+
+def thread_times(pid: int) -> dict[int, float]:
+    """CPU seconds used so far by each thread of a process and of the processes it started."""
+
+    root = psutil.Process(pid)
+    return {thread.id: thread.user_time + thread.system_time
+            for process in (root, *root.children(recursive=True)) for thread in process.threads()}
 
 
 class Session:
     def __init__(self, run_dir: str | Path, baseline: str | Path, config: str | Path = DEFAULT_CONFIG,
                  profile: str = "paper", interval: float = 0.2, clients: int = 3,
                  collector_port: int = collector.DEFAULT_PORT, dashboard_port: int = DASHBOARD_PORT,
-                 logger: EventLogger | None = None) -> None:
+                 logger: EventLogger | None = None, auto_recover: bool = False) -> None:
         self.run_dir, self.baseline, self.config = Path(run_dir).resolve(), Path(baseline), config
         self.profile, self.interval, self.clients = profile, interval, clients
         self.collector_port, self.dashboard_port = collector_port, dashboard_port
         self.logger = logger or EventLogger()
         self.stopping = asyncio.Event()
+        self.auto_recover = auto_recover
+        self.policy = RecoveryPolicy()
+        self._recovery_note = ""
+        self._threads: dict | None = None     # CPU by thread of the diagnosed replica
+        self._tasks: list[asyncio.Task] = []
         self.cluster: LocalCluster | None = None
         self.dashboard: Dashboard | None = None
         self.store: Store | None = None
@@ -58,7 +75,7 @@ class Session:
         self.store = Store(self.run_dir)
         signature, diagnoser = collector.attach_diagnosis(self.store, self.baseline, self.profile, self.logger)
         self.cluster = LocalCluster(self.run_dir, self.config, self.interval, self.clients)
-        self.dashboard = Dashboard(signature, diagnoser, self.run_dir, self.actions(), self.controls())
+        self.dashboard = Dashboard(signature, diagnoser, self.run_dir, self.actions(), self.controls(), self.info)
         self.store.subscribe(self.dashboard.observe)
         self._servers.append(await collector.start(self.store, "127.0.0.1", self.collector_port, self.logger))
         self._servers.append(await self.dashboard.start("127.0.0.1", self.dashboard_port))
@@ -69,8 +86,11 @@ class Session:
         ctl.record(self.run_dir, {"t": time.time(), "event": "recording_started", "config": str(self.config),
                                   "mode": replication.mode if replication else None,
                                   "client_interval": self.interval, "clients": self.clients})
+        self._tasks = [asyncio.ensure_future(self._recover()), asyncio.ensure_future(self._watch_threads())]
 
     async def stop(self) -> None:
+        for task in self._tasks:
+            task.cancel()
         if self._agent is not None and self._agent.poll() is None:
             kill_tree(self._agent.pid)
         if self.cluster is not None:
@@ -91,7 +111,12 @@ class Session:
 
         return {name: one_at_a_time(action) for name, action in (
             ("inject", self.inject), ("clear", self.clear), ("load", self.load),
-            ("rejuvenate", self.rejuvenate), ("down", self.down))}
+            ("rejuvenate", self.rejuvenate), ("auto", self.auto), ("down", self.down))}
+
+    def info(self) -> dict:
+        """What the page should know about this session, sent with every frame."""
+
+        return {"auto_recover": self.auto_recover, "recovery": self._recovery_note, "threads": self._threads}
 
     def controls(self) -> dict:
         servers = list(self.cluster.servers)
@@ -100,7 +125,9 @@ class Session:
                             {"label": "Clear fault", "action": "clear", "target": True},
                             {"label": "Restart replica", "action": "rejuvenate", "target": True},
                             {"label": "Double the load", "action": "load", "argument": str(2 * self.clients)},
-                            {"label": "Normal load", "action": "load", "argument": str(self.clients)}]}
+                            {"label": "Normal load", "action": "load", "argument": str(self.clients)},
+                            {"label": "Auto-recovery on", "action": "auto", "argument": "on"},
+                            {"label": "Auto-recovery off", "action": "auto", "argument": "off"}]}
 
     def inject(self, argument: str) -> str:
         """``S2`` or ``S2:0.5``: start the CPU fault in that replica."""
@@ -131,14 +158,74 @@ class Session:
         server = argument or self.dashboard.status.get("culprit")
         if not server:
             raise ClusterError("no replica is diagnosed now; name the one to restart")
+        return self._restart(server, "restart requested")
+
+    def _restart(self, server: str, reason: str) -> str:
         ready = self.cluster.view()[1]
         if ready != set(self.cluster.servers):
             raise ClusterError(f"not restarting {server}: only {and_join(sorted(ready)) if ready else 'no replica'} "
                                "ready, and the group must not lose a second one")
         pid = self.cluster.kill_replica(server)
+        self.policy.restarted(time.time())
         ctl.record(self.run_dir, {"t": time.time(), "event": "replica_killed", "server": server, "pid": pid,
-                                  "reason": "rejuvenation"})
+                                  "reason": reason})
         return f"{server} (pid {pid}) killed; the RM relaunches it"
+
+    def auto(self, argument: str) -> str:
+        """``on`` or ``off``: may the session restart a diagnosed replica by itself?"""
+
+        if argument not in ("on", "off"):
+            raise ValueError("say on or off")
+        self.auto_recover = argument == "on"
+        return f"automatic recovery {argument}"
+
+    async def _recover(self) -> None:
+        """Restart the diagnosed replica when automatic recovery is on and the policy allows it."""
+
+        loop = asyncio.get_running_loop()
+        while True:
+            await asyncio.sleep(0.5)
+            if not self.auto_recover:
+                self._recovery_note = ""
+                continue
+            server, why = self.policy.decide(time.time(), self.dashboard.status, self.cluster.view()[1],
+                                             self.cluster.servers)
+            self._recovery_note = why
+            if server is None:
+                continue
+
+            def restart(target: str = server) -> str:
+                with self._busy:
+                    return self._restart(target, "automatic recovery")
+
+            try:
+                self.logger.event(f"RECOVER: {why}: {await loop.run_in_executor(None, restart)}")
+            except ClusterError as exc:
+                self._recovery_note = str(exc)
+
+    async def _watch_threads(self) -> None:
+        """While a replica is diagnosed, measure which of its threads use the CPU."""
+
+        loop = asyncio.get_running_loop()
+        watched, before, moment = None, {}, 0.0
+        while True:
+            await asyncio.sleep(2)
+            culprit = self.dashboard.status.get("culprit") if self.dashboard.status["state"] == FAULT else None
+            sample = self.dashboard.latest(culprit) if culprit else None
+            pid = sample.get("pid") if sample else None
+            if pid is None:
+                watched, self._threads = None, None
+                continue
+            try:
+                after, now = await loop.run_in_executor(None, thread_times, pid), time.monotonic()
+            except psutil.Error:
+                continue
+            if watched == pid:
+                used = sorted(((100 * (seconds - before.get(thread, seconds)) / (now - moment), thread)
+                               for thread, seconds in after.items()), reverse=True)
+                self._threads = {"server": culprit, "count": len(after),
+                                 "threads": [{"id": thread, "cpu": round(cpu, 1)} for cpu, thread in used[:THREADS_SHOWN]]}
+            watched, before, moment = pid, after, now
 
     def down(self, argument: str) -> str:
         self._loop.call_soon_threadsafe(self.stopping.set)
@@ -171,7 +258,8 @@ async def autopilot(session: Session, say: Callable[[str], None], target: str = 
 
     A load change must be reported as shared, a fault must be pinned on its replica with
     the right cause while the fault-tolerance layer still sees nothing, and restarting the
-    replica must bring everything back to normal.
+    replica must bring everything back to normal. Then the fault is injected again with
+    automatic recovery on, and the session must repair it by itself.
     """
 
     board, cluster = session.dashboard, session.cluster
@@ -240,4 +328,21 @@ async def autopilot(session: Session, say: Callable[[str], None], target: str = 
     await asyncio.sleep(15)
     expect(state() == HEALTHY, f"did not stay normal: {board.status['headline']}")
     note("still normal 15 s later")
+
+    # The same fault again, this time with nobody pressing the restart button.
+    await act("auto", "on")
+    before, injected = last()["servers"][target]["incarnation"], time.monotonic()
+    await act("inject", target)
+    await until(lambda: state() == FAULT and board.status["culprit"] == target, 40, "the second fault to be diagnosed")
+    note(f"diagnosed again; automatic recovery says: {session.info()['recovery']}")
+    await until(lambda: state() == HEALTHY and target in last()["servers"]
+                and last()["servers"][target]["incarnation"] != before
+                and last()["ft"] is not None and set(last()["ft"]["ready"]) == servers,
+                150, f"{target} to be restarted automatically")
+    timings["recovered automatically"] = time.monotonic() - injected
+    expect(any(event["text"] == f"{target} killed (automatic recovery)" for event in board.events),
+           "the restart was not recorded as automatic")
+    note(f"{target} restarted without being asked; normal {timings['recovered automatically']:.1f} s after the "
+         "injection, which includes waiting out the minute between restarts")
+    await act("auto", "off")
     return timings

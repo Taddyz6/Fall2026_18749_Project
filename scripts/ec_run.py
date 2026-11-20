@@ -10,6 +10,7 @@ While "up" is running, from another terminal (or with the buttons on the page):
     python scripts/ec_run.py clear S2
     python scripts/ec_run.py load 6                # run 6 clients instead of 3; "load 3" goes back
     python scripts/ec_run.py rejuvenate            # kill the diagnosed replica so the RM relaunches it
+    python scripts/ec_run.py auto on               # let the session do that by itself; "auto off" stops it
     python scripts/ec_run.py down                  # stop everything
 
 "up" starts the system (RM, GFD, three LFDs with their servers, three clients),
@@ -36,7 +37,7 @@ from ft_system.blackbox.collector import DEFAULT_PORT as COLLECTOR_PORT  # noqa:
 from ft_system.blackbox.dashboard import DEFAULT_PORT as DASHBOARD_PORT  # noqa: E402
 from ft_system.blackbox.session import DEFAULT_CONFIG, Session, StepFailed, autopilot, send  # noqa: E402
 
-REMOTE = ("inject", "clear", "load", "rejuvenate")
+REMOTE = ("inject", "clear", "load", "rejuvenate", "auto")
 
 
 def say(text=""):
@@ -48,7 +49,7 @@ def new_session(args, name):
     if not args.baseline.exists():
         raise SystemExit(f"no signature at {args.baseline}: run 'python scripts/ec_run.py train' first")
     return Session(run_dir, args.baseline, args.config, args.profile, args.interval,
-                   collector_port=args.port, dashboard_port=args.dashboard)
+                   collector_port=args.port, dashboard_port=args.dashboard, auto_recover=args.auto_recover)
 
 
 async def up(args):
@@ -143,13 +144,16 @@ def build_parser():
                        ("autopilot", "Start, run the scripted demo with checks, and stop")):
         sub = commands.add_parser(name, help=text)
         sub.add_argument("--profile", choices=("paper", "fast"), default="paper", help="Detection windows")
+        sub.add_argument("--auto-recover", action="store_true",
+                         help="Restart a diagnosed replica without being asked")
         session_options(sub)
         if name == "autopilot":
             sub.add_argument("--rounds", type=int, default=1, help="How many times to run it")
     for name, text, takes in (("inject", "Start the CPU fault in a replica, for example S2", "+"),
                               ("clear", "Stop the fault in a replica", "+"),
                               ("load", "Run this many clients", "+"),
-                              ("rejuvenate", "Kill a replica (default: the one diagnosed) so the RM relaunches it", "*")):
+                              ("rejuvenate", "Kill a replica (default: the one diagnosed) so the RM relaunches it", "*"),
+                              ("auto", "Turn automatic recovery on or off", "+")):
         sub = commands.add_parser(name, help=text)
         sub.add_argument("argument", nargs=takes)
         if name == "inject":

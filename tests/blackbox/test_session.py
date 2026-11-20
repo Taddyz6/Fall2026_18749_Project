@@ -96,8 +96,9 @@ def test_controls_offer_the_demo_buttons_with_the_load_doubled_from_the_start(se
     assert (controls["targets"], controls["default"]) == (["S1", "S2", "S3"], "S2")
     assert [(button["label"], button.get("argument"), button.get("target")) for button in controls["buttons"]] == [
         ("Inject fault", None, True), ("Clear fault", None, True), ("Restart replica", None, True),
-        ("Double the load", "6", None), ("Normal load", "3", None)]
-    assert set(session.actions()) == {"inject", "clear", "load", "rejuvenate", "down"}
+        ("Double the load", "6", None), ("Normal load", "3", None),
+        ("Auto-recovery on", "on", None), ("Auto-recovery off", "off", None)]
+    assert set(session.actions()) == {"inject", "clear", "load", "rejuvenate", "auto", "down"}
 
 
 def test_load_changes_the_clients_and_records_it(session):
@@ -119,7 +120,8 @@ def test_rejuvenate_restarts_the_named_or_the_diagnosed_replica_and_records_it(s
 
     assert session.cluster.killed == ["S1", "S2"]
     assert [(event["event"], event["server"], event["reason"]) for event in recorded(session)] == [
-        ("replica_killed", "S1", "rejuvenation"), ("replica_killed", "S2", "rejuvenation")]
+        ("replica_killed", "S1", "restart requested"), ("replica_killed", "S2", "restart requested")]
+    assert session.policy.last_restart is not None        # a requested restart also starts the minute's wait
 
 
 def test_rejuvenate_is_refused_while_a_replica_is_not_ready(session):
@@ -128,6 +130,63 @@ def test_rejuvenate_is_refused_while_a_replica_is_not_ready(session):
     with pytest.raises(ClusterError, match="not restarting S1: only S1 and S3 ready"):
         session.rejuvenate("S1")
     assert session.cluster.killed == []
+
+
+def test_automatic_recovery_is_off_until_switched_on_and_shows_in_what_the_page_is_told(session):
+    assert session.info() == {"auto_recover": False, "recovery": "", "threads": None}
+
+    assert session.actions()["auto"]("on") == "automatic recovery on"
+    assert session.info()["auto_recover"] is True
+    assert session.actions()["auto"]("off") == "automatic recovery off"
+    with pytest.raises(ValueError, match="say on or off"):
+        session.auto("maybe")
+
+
+async def test_automatic_recovery_restarts_the_diagnosed_replica_once(session):
+    session.auto_recover = True
+    session.policy.persist = 0.0
+    session.dashboard.status = {"state": "fault", "culprit": "S2", "cause": "cpu_task", "since": 0.0,
+                                "headline": "S2: CPU-intensive task"}
+    task = asyncio.ensure_future(session._recover())
+    try:
+        for _ in range(40):
+            await asyncio.sleep(0.1)
+            if session.cluster.killed:
+                break
+        await asyncio.sleep(1.2)          # two more looks: the minute between restarts holds it back
+    finally:
+        task.cancel()
+
+    assert session.cluster.killed == ["S2"]
+    assert [(event["server"], event["reason"]) for event in recorded(session)] == [("S2", "automatic recovery")]
+    assert "waiting 60 s between restarts" in session.info()["recovery"]
+
+
+def test_threads_of_a_process_are_measured_by_their_cpu_time():
+    import os
+    import threading
+
+    from ft_system.blackbox.session import thread_times
+
+    stop = threading.Event()
+
+    def spin():
+        while not stop.is_set():
+            pass
+
+    before = thread_times(os.getpid())
+    worker = threading.Thread(target=spin, daemon=True)
+    worker.start()
+    try:
+        import time
+        time.sleep(0.5)
+        after = thread_times(os.getpid())
+    finally:
+        stop.set()
+        worker.join()
+
+    assert worker.native_id in after and worker.native_id not in before
+    assert after[worker.native_id] > 0.2     # the spinning thread stands out
 
 
 async def test_send_reaches_a_running_dashboard_and_reports_refusals(session):

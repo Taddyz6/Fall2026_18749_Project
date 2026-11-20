@@ -78,7 +78,14 @@
   #charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
   @media (max-width: 700px) { #charts { grid-template-columns: minmax(0, 1fr); } }
   .chart { position: relative; }
-  .chart canvas { display: block; width: 100%; height: 200px; outline-offset: 2px; }
+  .chart.wide { grid-column: 1 / -1; }
+  #threads .bar { display: grid; grid-template-columns: 120px 1fr 64px; align-items: center; gap: 8px;
+                  font-size: 12.5px; padding: 2px 0; }
+  #threads .track { height: 12px; }
+  #threads .fill { height: 12px; min-width: 2px; background: var(--s1); border-radius: 0 4px 4px 0; }
+  #threads .bar b { font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }
+  #threads .bar span { color: var(--ink2); }
+  .chart canvas { display: block; width: 100%; height: 210px; outline-offset: 2px; }
   .column { display: grid; gap: 12px; }
   #matrix-wrap { position: relative; }
   #matrix { display: block; width: 100%; }
@@ -145,6 +152,12 @@
   <div id="layout">
     <section class="column">
       <div id="charts" aria-label="Metrics of each replica"></div>
+
+      <div class="card" id="threads-card" hidden>
+        <h2 id="threads-title">CPU by thread</h2>
+        <p class="note" id="threads-note"></p>
+        <div id="threads"></div>
+      </div>
 
       <div class="card" id="ft-card" hidden>
         <h2>What the fault-tolerance layer reports</h2>
@@ -252,7 +265,7 @@ function timeAxis(g, left, right, bottom) {
   return (t) => left + ((t - from) / (to - from)) * (right - left);
 }
 function eventRules(g, x, top, bottom, left, right, numbered) {
-  let previous = -Infinity, raised = false;
+  const lastAt = [-Infinity, -Infinity, -Infinity];   // numbers of rules that are close sit on three levels
   state.events.forEach((event, index) => {
     const at = x(event.t);
     if (at < left || at > right) return;
@@ -261,18 +274,19 @@ function eventRules(g, x, top, bottom, left, right, numbered) {
     g.lineWidth = 1;
     g.beginPath(); g.moveTo(at, top); g.lineTo(at, bottom); g.stroke();
     if (numbered) {
-      raised = !raised && at - previous < 16;
-      previous = at;
+      let level = lastAt.findIndex((x) => at - x >= 15);
+      if (level < 0) level = lastAt.length - 1;
+      lastAt[level] = at;
       g.fillStyle = css("--ink2");
       g.textAlign = "center"; g.textBaseline = "bottom";
-      g.fillText(String(index + 1), at, top - (raised ? 11 : 1));
+      g.fillText(String(index + 1), at, top - 1 - 10 * level);
     }
   });
 }
 
 function drawChart(chart) {
   const [g, width, height] = fit(chart.canvas);
-  const left = 44, right = width - 10, top = 26, bottom = height - 22;
+  const left = 44, right = width - 10, top = 36, bottom = height - 22;
   const frames = visible(), band = chart.metric.band, key = chart.metric.key;
   const values = [];
   for (const frame of frames) for (const label in frame.servers) {
@@ -432,9 +446,13 @@ function drawBanner() {
   document.getElementById("badge").textContent = ICONS[status.state];
   document.getElementById("headline").textContent = status.headline;
   document.getElementById("detail").textContent = status.detail || "";
-  document.getElementById("advice").textContent = status.action ? "Suggested action: " + status.action + "." : "";
+  const session = frame.session || {};
+  document.getElementById("advice").textContent = (status.action ? "Suggested action: " + status.action + ". " : "") +
+    (session.auto_recover && status.state === "fault" && session.recovery ? "Automatic recovery: " + session.recovery + "." : "");
+  drawThreads(session.threads);
   const costs = state.frames.slice(-60).map((recent) => recent.host && recent.host.agent_cpu).filter((cost) => cost != null);
   document.getElementById("since").textContent = (status.since ? "since " + clock(status.since) : "") +
+    (frame.session ? "\nautomatic recovery " + (session.auto_recover ? "on" : "off") : "") +
     (costs.length ? "\nmonitor cost " + (costs.reduce((sum, cost) => sum + cost, 0) / costs.length).toFixed(1) + "% of one core" : "");
   document.getElementById("since").style.whiteSpace = "pre-line";
   const card = document.getElementById("ft-card");
@@ -445,6 +463,24 @@ function drawBanner() {
       el("b", "", frame.ft.ready.join(", ") || "none"), " · heartbeat timeouts in the last minute: ",
       el("b", "", String(frame.ft.timeouts)));
   }
+}
+function drawThreads(threads) {
+  const card = document.getElementById("threads-card");
+  card.hidden = !threads;
+  if (!threads) return;
+  const busiest = threads.threads[0];
+  document.getElementById("threads-title").textContent = "CPU by thread in " + threads.server;
+  document.getElementById("threads-note").textContent = "The " + threads.threads.length + " busiest of " + threads.count +
+    " threads, in percent of one core. One thread doing nearly all the work is a task inside the process, not request handling.";
+  const peak = Math.max(100, busiest ? busiest.cpu : 0);
+  document.getElementById("threads").replaceChildren(...threads.threads.map((thread) => {
+    const row = el("div", "bar");
+    const track = el("div", "track"), fill = el("div", "fill");
+    fill.style.width = (100 * Math.max(0, thread.cpu) / peak) + "%";
+    track.append(fill);
+    row.append(el("span", "", "thread " + thread.id), track, el("b", "", thread.cpu.toFixed(1) + "%"));
+    return row;
+  }));
 }
 function drawEvents() {
   const list = document.getElementById("events");
@@ -489,8 +525,10 @@ function build() {
   state.charts = state.config.charts.map((metric) => {
     const card = el("div", "card chart");
     const band = metric.band;
+    if (metric.wide) card.classList.add("wide");
     card.append(el("h2", "", metric.name),
-                el("p", "note", band ? "Normal: " + fmt(band.low6) + " to " + fmt(band.high6) : "No signature for this metric"));
+                el("p", "note", metric.note || (band ? "Normal: " + fmt(band.low6) + " to " + fmt(band.high6)
+                                                : "No signature for this metric")));
     const canvas = el("canvas");
     canvas.tabIndex = 0;
     canvas.setAttribute("aria-label", metric.name + " of each replica over time");

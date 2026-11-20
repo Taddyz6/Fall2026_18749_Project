@@ -12,7 +12,8 @@ file is changed, and nothing in M5 imports this code.
 | 4. Detection and diagnosis | Built and tested on Windows |
 | 5. Live dashboard | Built and tested on Windows |
 | 6. One-command launcher and unattended demo | Built and tested on Windows |
-| Automatic recovery, reply-time panel, per-thread view, evaluation | Not built yet |
+| 7. Automatic recovery, client reply times, CPU by thread | Built and tested on Windows |
+| Evaluation over many trials | Not done yet |
 
 ## Quick start
 
@@ -473,6 +474,17 @@ a theme; otherwise the page follows the system setting.
 - **Events.** Everything done to the system and every change of diagnosis,
   numbered to match the rules drawn on the charts.
 
+When the page runs beside a live system on the same computer (section 6) it
+also shows:
+
+- **Client reply time.** The median time each replica takes to answer, over the
+  last 5 s, read from the client logs. This is what the fault does to the
+  service, and the diagnosis does not use it. During the 0.75 fault S2's
+  replies take tens of milliseconds while S1's and S3's take about one.
+- **CPU by thread.** While a replica is diagnosed, the busiest threads of its
+  process in percent of one core. For the injected fault one thread shows about
+  72% and the rest 0%: a task inside the process, not request handling.
+
 The server sends one frame a second over server-sent events and keeps the last
 15 minutes for a page that opens late. It is bound to this computer only
 unless the collector is started with `--bind 0.0.0.0`.
@@ -515,10 +527,13 @@ python scripts/ec_run.py load 6                # run 6 clients instead of 3
 python scripts/ec_run.py load 3
 python scripts/ec_run.py rejuvenate            # kill the diagnosed replica; the RM relaunches it
 python scripts/ec_run.py rejuvenate S1         # or a named one
+python scripts/ec_run.py auto on               # let the session restart a diagnosed replica itself
+python scripts/ec_run.py auto off
 python scripts/ec_run.py down                  # stop everything
 ```
 
 Each action is recorded in `events.jsonl`, whichever way it was started.
+`up --auto-recover` starts with automatic recovery on.
 
 - **Restarting a replica is refused unless every replica is ready.** Recovery
   must never take the group below two working replicas.
@@ -528,6 +543,23 @@ Each action is recorded in `events.jsonl`, whichever way it was started.
 - **`down` always cleans up.** If no session answers, it kills every process of
   the system and the monitor that it finds on this computer, including ones you
   started by hand.
+
+### Automatic recovery
+
+Restarting the diagnosed replica reuses the system's own crash handling: the
+LFD reports the dead process and the RM relaunches it. That turns a fail-slow
+fault, which M5 cannot repair, into a crash fault, which it can.
+
+With automatic recovery on, the session restarts the culprit by itself
+([`recover.py`](../src/ft_system/blackbox/recover.py)), but only when all of
+these hold:
+
+- the diagnosis is one a restart cures (a CPU-intensive task or memory growth);
+- it has stood for 5 s;
+- every replica is ready;
+- no replica was restarted in the last 60 s, by anyone.
+
+While it is holding back, the banner says why.
 
 ### The unattended demo
 
@@ -543,6 +575,8 @@ as expected:
 4. Restart S2. Expect it to be relaunched as a new process without the fault,
    ready, and inside its normal range.
 5. Wait 15 s and expect it to still be normal.
+6. Turn automatic recovery on and inject the fault again. Expect the session to
+   restart S2 without being asked, once the minute since step 4 has passed.
 
 ### Measured
 
@@ -554,6 +588,10 @@ Three rounds in a row on Nov 20 (Windows), all passed. Each took about 70 s, or 
 | Fault in S2 diagnosed | 9.9 s | 9.8 s | 9.8 s |
 | S2 relaunched, ready and normal after being killed | 8.0 s | 7.8 s | 7.0 s |
 
+With step 6 added, one more round passed: the second fault was diagnosed after
+10 s, the policy held back because S2 had been restarted 33 s earlier, and S2
+was restarted automatically and normal again 45 s after the injection.
+
 After each round no process of the system or the monitor was left running.
 After a session's launcher was killed without cleanup, `down` removed the 12
 processes it left behind.
@@ -564,12 +602,12 @@ processes it left behind.
 python -m pytest tests/blackbox -q
 ```
 
-144 tests. They cover the fault injector (in a stand-in process that takes
+159 tests. They cover the fault injector (in a stand-in process that takes
 `--server-id`), discovery, the agent (against stand-in processes with component
 command lines), the collector, the signature, each detection and blame rule on
 synthetic series, the diagnosis on synthetic recorded runs, the figures, and
-the dashboard's frames and HTTP routes, and the session's actions and client
-load changes with stand-in processes. The agent and session tests are skipped
+the dashboard's frames and HTTP routes, the recovery rules, and the session's
+actions and client load changes with stand-in processes. The agent and session tests are skipped
 where `psutil` is not installed, and the figure tests where `matplotlib` is
 not. The page itself was checked by eye in a headless browser, in both themes,
 with the pointer over a chart and a matrix cell, and by pressing a button.

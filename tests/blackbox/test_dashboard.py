@@ -6,7 +6,9 @@ import pytest
 
 from ft_system.blackbox import dashboard as dashboard_module
 from ft_system.blackbox.baseline import Signature, train
-from ft_system.blackbox.dashboard import CHARTS, MATRIX, Dashboard, LogWatcher, Tail, describe, play
+from ft_system.blackbox.dashboard import (
+    CHARTS, MATRIX, Dashboard, LogWatcher, ReplyWatcher, Tail, describe, play,
+)
 from ft_system.blackbox.detect import PAPER
 from ft_system.blackbox.diagnose import Diagnoser
 from ft_system.blackbox.faults.ctl import EVENTS_FILE
@@ -32,6 +34,8 @@ async def replayed(board, records, **kwargs):
     ({"event": "fault_injected", "server": "S2", "t": 5.0}, ("action", "fault injected into S2", "S2")),
     ({"event": "fault_cleared", "server": "S2", "t": 5.0}, ("action", "fault cleared in S2", "S2")),
     ({"event": "replica_killed", "server": "S1", "t": 5.0}, ("action", "S1 killed", "S1")),
+    ({"event": "replica_killed", "server": "S1", "reason": "automatic recovery", "t": 5.0},
+     ("action", "S1 killed (automatic recovery)", "S1")),
     ({"event": "load_changed", "clients": 6, "t": 5.0}, ("action", "client count set to 6", None)),
     ({"event": "process_exited", "label": "S2", "role": "server", "t": 5.0}, ("process", "S2 exited", "S2")),
     ({"event": "process_started", "label": "S2", "role": "server", "incarnation": 2, "t": 5.0},
@@ -90,6 +94,27 @@ def test_log_watcher_reads_the_rm_view_and_counts_recent_heartbeat_timeouts(tmp_
     assert later == {"members": ["S1", "S3"], "ready": ["S1", "S3"], "timeouts": 0}
 
 
+def test_reply_watcher_gives_each_replica_its_recent_median_reply_time(tmp_path):
+    watcher = ReplyWatcher(tmp_path)
+    now = datetime(2026, 11, 20, 0, 31, 30).timestamp()
+    assert watcher.poll(now) == {}
+
+    (tmp_path / "C1.log").write_text(
+        "[2026-11-20 00:31:20.000] Sending <C1, S1, 1, request>\n"       # answered too long ago to count
+        "[2026-11-20 00:31:20.001] Received <C1, S1, 1, reply>\n"
+        "[2026-11-20 00:31:28.000] Sending <C1, S1, 2, request>\n"
+        "[2026-11-20 00:31:28.000] Sending <C1, S2, 2, request>\n"
+        "[2026-11-20 00:31:28.001] Received <C1, S1, 2, reply>\n"
+        "[2026-11-20 00:31:28.030] Received <C1, S2, 2, reply>\n"
+        "[2026-11-20 00:31:29.000] Sending <C1, S3, 3, request>\n", encoding="utf-8")   # not answered yet
+    (tmp_path / "C2.log").write_text(
+        "[2026-11-20 00:31:29.000] Sending <C2, S2, 7, request>\n"
+        "[2026-11-20 00:31:29.050] Received <C2, S2, 7, reply>\n", encoding="utf-8")
+
+    assert watcher.poll(now) == {"S1": 1.0, "S2": 40.0}
+    assert watcher.poll(now + 10) == {}
+
+
 async def test_frames_carry_values_levels_and_the_diagnosis(board):
     await replayed(board, run_with_fault())
     by_time = {frame["t"]: frame for frame in board.frames}
@@ -129,6 +154,24 @@ async def test_a_silent_or_newborn_replica_shows_as_a_gap(board):
     assert sorted(by_time[1110.0]["servers"]) == ["S1", "S2"]
     newborn = by_time[1150.0]["servers"]["S3"]
     assert (newborn["incarnation"], newborn["age"], newborn["level"]) == (2, 3.0, {})   # shown, not yet judged
+
+
+def test_a_live_dashboard_adds_reply_times_and_what_its_host_tells_it(tmp_path, signature):
+    board = Dashboard(signature, Diagnoser(signature, PAPER), run_dir=tmp_path,
+                      extra=lambda: {"auto_recover": True})
+    (tmp_path / "C1.log").write_text(
+        "[2026-11-20 00:31:28.000] Sending <C1, S1, 2, request>\n"
+        "[2026-11-20 00:31:28.012] Received <C1, S1, 2, reply>\n", encoding="utf-8")
+    now = datetime(2026, 11, 20, 0, 31, 29).timestamp()
+
+    board.observe(sample("S1", 150.0, cpu=1.0) | {"recv": now - 0.5})
+    board.observe({"type": "sample", "label": "host:pc", "role": "host", "recv": now, "m": {"cpu": 5.0}})
+    frame = board.frames[-1]
+
+    assert frame["servers"]["S1"]["v"] == {"cpu": 1.0, "reply_ms": 12.0}
+    assert frame["session"] == {"auto_recover": True}
+    assert [chart["key"] for chart in board.snapshot()["charts"]] == [*CHARTS, "reply_ms"]
+    assert board.latest("S1")["m"] == {"cpu": 1.0} and board.latest("S9") is None
 
 
 def test_things_done_to_the_system_are_read_from_the_events_file(tmp_path, signature):
