@@ -12,7 +12,10 @@ mean, in deviations, and an excursion counts only when it lasts:
 The windows (7 and 15), the thresholds and the weight of the running mean are
 the paper's. The running mean follows slow drift, and it stops following while
 a sample is at level 2, so a fault that persists is never learned as normal.
-The deviation is the trained one and does not adapt.
+A value is judged against whichever is nearer, the running mean or the trained
+one: a value back where the signature says normal is never an anomaly, so a
+mean that drifted during a long change of workload is free to come back. The
+deviation is the trained one and does not adapt.
 """
 
 from __future__ import annotations
@@ -69,6 +72,11 @@ class MetricTrack:
             # Warm-up and steady state have different statistics: start again from the trained mean.
             self.mean, self.phase = stats["mean"], phase
         level = level_of(value, metric, stats, self.mean)
+        trained = level_of(value, metric, stats)
+        if abs(trained) < abs(level):
+            # Without this, a mean that drifted up during a long change and then froze
+            # would call every normal value anomalous once the change was over.
+            level = trained
         if abs(level) < 2:
             self.mean += self.profile.adapt * (value - self.mean)
         self.spread = spread(metric, stats)

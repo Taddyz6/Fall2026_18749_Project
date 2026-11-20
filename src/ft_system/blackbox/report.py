@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import argparse
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import matplotlib
@@ -191,6 +191,172 @@ def _scale(row, points: Sequence[dict]) -> None:
     low, high = min(values + bounds), max(values + bounds)
     margin = 0.08 * (high - low or 1.0)
     row[0].set_ylim(max(0.0, low - margin), high + margin)
+
+
+# --- figures for the evaluation ---
+
+SERIES_2, SERIES_3 = "#eb6834", "#1baf7a"
+
+
+def _canvas(columns: int, width: float, height: float, title: str, note: str = ""):
+    """A figure with ``columns`` panels in the house style, titled top-left."""
+
+    pyplot.rcParams.update({"font.family": "sans-serif", "font.size": 8.5,
+                            "font.sans-serif": ["Segoe UI", "Helvetica Neue", "Arial", "DejaVu Sans"]})
+    figure, panels = pyplot.subplots(1, columns, figsize=(width, height), facecolor=SURFACE, squeeze=False)
+    for axes in panels[0]:
+        axes.set_facecolor(SURFACE)
+        axes.grid(axis="y", color=GRID, linewidth=0.6)
+        axes.set_axisbelow(True)
+        axes.tick_params(colors=INK_MUTED, length=0, labelsize=8)
+        for side, spine in axes.spines.items():
+            spine.set_visible(side == "bottom")
+            spine.set_color(AXIS)
+    figure.suptitle(title, x=0.012, y=1 - 0.10 / height, ha="left", va="top", color=INK, fontsize=11,
+                    fontweight="semibold")
+    if note:
+        figure.text(0.012, 1 - 0.40 / height, note, ha="left", va="top", color=INK_SECONDARY, fontsize=8.5)
+    return figure, list(panels[0])
+
+
+def _save(figure, out: str | Path, height: float, header: float = 0.62) -> Path:
+    figure.tight_layout(rect=(0, 0, 1, 1 - header / height))
+    out = Path(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(out, dpi=150, facecolor=SURFACE)
+    pyplot.close(figure)
+    return out
+
+
+def _percent(duty: float | None) -> str:
+    return "no fault" if not duty else f"{duty:.0%}"
+
+
+def plot_detection(trials: Mapping[str, Sequence[Mapping]], out: str | Path) -> Path:
+    """Seconds from injection to diagnosis for every fault, by intensity; one colour per window setting.
+
+    ``trials`` maps a setting's name to its fault rows (``evaluate.fault_trials``).
+    """
+
+    names = list(trials)
+    duties = sorted({fault["duty"] for faults in trials.values() for fault in faults})
+    figure, (axes,) = _canvas(1, 7.2, 3.9, "How long until a fault is diagnosed",
+                              "One dot per injected fault; the bar is the median for that intensity.")
+    step = 0.26
+    for position, (name, colour) in enumerate(zip(names, (SERIES, SERIES_2))):
+        offset = (position - (len(names) - 1) / 2) * step
+        for index, duty in enumerate(duties):
+            delays = sorted(fault["delay"] for fault in trials[name] if fault["duty"] == duty and "delay" in fault)
+            if not delays:
+                continue
+            spread_x = [index + offset + (rank - (len(delays) - 1) / 2) * 0.022 for rank in range(len(delays))]
+            axes.scatter(spread_x, delays, s=34, color=colour, edgecolors=SURFACE, linewidths=1.0, zorder=3,
+                         label=name if index == 0 else None)
+            middle = delays[len(delays) // 2] if len(delays) % 2 else (delays[len(delays) // 2 - 1] + delays[len(delays) // 2]) / 2
+            axes.plot([index + offset - 0.09, index + offset + 0.09], [middle, middle], color=INK, linewidth=1.6, zorder=4)
+            axes.annotate(f"{middle:.1f} s", (index + offset, max(delays)), xytext=(0, 6), textcoords="offset points",
+                          ha="center", color=INK_SECONDARY, fontsize=8)
+    axes.set_xticks(range(len(duties)), [_percent(duty) for duty in duties])
+    axes.set_xlabel("Fault intensity (share of each 0.1 s the injected task is busy)", color=INK_SECONDARY)
+    axes.set_ylabel("Seconds from injection to diagnosis", color=INK_SECONDARY)
+    axes.set_ylim(0, None)
+    axes.margins(y=0.18)
+    axes.legend(loc="upper left", frameon=False, labelcolor=INK_SECONDARY, title="Detection windows", title_fontsize=8,
+                bbox_to_anchor=(1.0, 1.0))
+    return _save(figure, out, 3.9)
+
+
+def plot_impact(levels: Sequence[Mapping], out: str | Path) -> Path:
+    """What the fault does at each intensity: reply times of the faulty replica, and heartbeats answered.
+
+    Each level has ``duty``, ``median_ms``, ``p95_ms``, ``sent`` and ``answered``.
+    """
+
+    figure, (left, right) = _canvas(2, 9.6, 3.9, "A fault the fault-tolerance layer cannot see",
+                                    "Five minutes at each intensity, fault in S2. Replies slow down long before a "
+                                    "heartbeat is missed.")
+    positions = range(len(levels))
+    for name, colour, key in (("median", SERIES, "median_ms"), ("95th percentile", SERIES_2, "p95_ms")):
+        values = [max(level[key], 0.5) for level in levels]
+        left.plot(positions, values, color=colour, linewidth=2, marker="o", markersize=5.5, markeredgecolor=SURFACE,
+                  label=name)
+        left.annotate(name, (len(levels) - 1, values[-1]), xytext=(8, 0), textcoords="offset points", va="center",
+                      color=INK_SECONDARY, fontsize=8)
+    left.set_yscale("log")
+    left.set_yticks([1, 10, 100, 1000, 10000, 100000], ["1 ms", "10 ms", "100 ms", "1 s", "10 s", "100 s"])
+    left.minorticks_off()
+    left.set_ylabel("Time for S2 to answer a client", color=INK_SECONDARY)
+    left.margins(x=0.16)
+    left.legend(loc="upper left", frameon=False, labelcolor=INK_SECONDARY, fontsize=8)
+    answered = [100 * level["answered"] / level["sent"] if level["sent"] else 0 for level in levels]
+    bars = right.bar(positions, answered, width=0.24, color=SERIES)
+    for bar, level in zip(bars, levels):
+        right.annotate(f"{level['answered']} of {level['sent']}", (bar.get_x() + bar.get_width() / 2, bar.get_height()),
+                       xytext=(0, 4), textcoords="offset points", ha="center", color=INK_SECONDARY, fontsize=7.5)
+    right.set_ylim(0, 112)
+    right.set_yticks([0, 25, 50, 75, 100], ["0%", "25%", "50%", "75%", "100%"])
+    right.set_ylabel("Heartbeats from LFD2 that S2 answered", color=INK_SECONDARY)
+    for axes in (left, right):
+        axes.set_xticks(positions, [_percent(level["duty"]) for level in levels])
+        axes.set_xlabel("Fault intensity", color=INK_SECONDARY)
+    return _save(figure, out, 3.9)
+
+
+def plot_loop(trials: Sequence[Mapping], out: str | Path) -> Path:
+    """The full loop for each fault with automatic recovery on: undiagnosed, waiting, relaunching."""
+
+    done = [trial for trial in trials if trial["ready"] is not None]
+    height = 1.5 + 0.34 * len(done)
+    figure, (axes,) = _canvas(1, 7.6, height, "From fault to repaired, with nobody at the keyboard",
+                              "Automatic recovery on. Each bar is one injected fault, from injection to all three "
+                              "replicas ready.")
+    stages = (("fault running, not yet diagnosed", SERIES, lambda t: (0.0, t["diagnosed"])),
+              ("diagnosed, restart held back by the rules", SERIES_2, lambda t: (t["diagnosed"], t["restarted"])),
+              ("replica relaunching", SERIES_3, lambda t: (t["restarted"], t["ready"])))
+    for row, trial in enumerate(done):
+        for name, colour, span in stages:
+            start, end = span(trial)
+            axes.barh(row, end - start, left=start, height=0.5, color=colour, edgecolor=SURFACE, linewidth=1.4,
+                      label=name if row == 0 else None)
+        axes.annotate(f"{trial['ready']:.1f} s", (trial["ready"], row), xytext=(6, 0), textcoords="offset points",
+                      va="center", color=INK_SECONDARY, fontsize=8)
+    axes.set_yticks(range(len(done)), [f"{index + 1}: {trial['server']}" for index, trial in enumerate(done)])
+    axes.invert_yaxis()
+    axes.grid(axis="y", visible=False)
+    axes.grid(axis="x", color=GRID, linewidth=0.6)
+    axes.set_xlabel("Seconds after the fault was injected", color=INK_SECONDARY)
+    axes.margins(x=0.1)
+    axes.legend(loc="upper center", bbox_to_anchor=(0.5, -0.32 / (0.34 * len(done) + 0.2)), ncols=3, frameon=False,
+                labelcolor=INK_SECONDARY, fontsize=8)
+    return _save(figure, out, height)
+
+
+def plot_cost(conditions: Mapping[str, Mapping], out: str | Path) -> Path:
+    """What watching costs the service: client reply times and server CPU in each condition."""
+
+    names = list(conditions)
+    figure, (left, right) = _canvas(2, 9.0, 3.6, "What the monitor costs the service",
+                                    "Three minutes in each condition, no fault.")
+    width = 0.22
+    for position, (label, colour, key) in enumerate((("mean", SERIES, "mean_ms"), ("95th percentile", SERIES_2, "p95_ms"))):
+        bars = left.bar([index + (position - 0.5) * width for index in range(len(names))],
+                        [conditions[name][key] for name in names], width=width - 0.03, color=colour, label=label)
+        for bar in bars:
+            left.annotate(f"{bar.get_height():g}", (bar.get_x() + bar.get_width() / 2, bar.get_height()),
+                          xytext=(0, 3), textcoords="offset points", ha="center", color=INK_SECONDARY, fontsize=8)
+    left.set_ylabel("Client reply time (ms)", color=INK_SECONDARY)
+    left.legend(loc="lower left", bbox_to_anchor=(0.0, 1.0), ncols=2, frameon=False, labelcolor=INK_SECONDARY,
+                fontsize=8)
+    left.margins(y=0.15)
+    bars = right.bar(range(len(names)), [conditions[name]["server_cpu"] for name in names], width=0.22, color=SERIES)
+    for bar in bars:
+        right.annotate(f"{bar.get_height():.2f}%", (bar.get_x() + bar.get_width() / 2, bar.get_height()),
+                       xytext=(0, 3), textcoords="offset points", ha="center", color=INK_SECONDARY, fontsize=8)
+    right.set_ylabel("Mean CPU of one server (% of one core)", color=INK_SECONDARY)
+    right.margins(y=0.25)
+    for axes in (left, right):
+        axes.set_xticks(range(len(names)), [conditions[name]["label"] for name in names])
+    return _save(figure, out, 3.6)
 
 
 def build_parser() -> argparse.ArgumentParser:

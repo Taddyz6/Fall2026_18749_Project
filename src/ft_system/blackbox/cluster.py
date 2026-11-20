@@ -10,6 +10,7 @@ Windows that means walking the process tree.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import subprocess
@@ -79,11 +80,12 @@ class LocalCluster:
     """All processes of one local run; its logs and fault files share ``run_dir``."""
 
     def __init__(self, run_dir: str | Path, config: str | Path = "configs/m5.active.local.toml",
-                 client_interval: float = 0.2, clients: int | None = None) -> None:
+                 client_interval: float = 0.2, clients: int | None = None, shim: bool = True) -> None:
         self.run_dir = Path(run_dir).resolve()
         self.config_path = (PROJECT_ROOT / config).resolve()
         self.config = load_config(self.config_path)
         self.client_interval = client_interval
+        self.shim = shim  # False runs the system exactly as the M5 demo does, with nothing added
         self.servers = tuple(self.config.servers)
         self.client_ids = tuple(self.config.clients)
         self.clients = len(self.client_ids) if clients is None else clients  # how many run at the start
@@ -98,6 +100,17 @@ class LocalCluster:
     def __exit__(self, *_) -> None:
         self.stop()
 
+    @property
+    def config_hash(self) -> str:
+        """Fingerprint of the config's contents: the same file name can hold a different system.
+
+        A server logs one counter per configured client with every request, so even the
+        number of clients in the config changes what its normal I/O looks like.
+        """
+
+        text = self.config_path.read_text(encoding="utf-8")  # read as text: line endings do not count
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
     def log_path(self, name: str) -> Path:
         return self.run_dir / f"{name}.log"
 
@@ -110,7 +123,7 @@ class LocalCluster:
     def _launch(self, name: str, module: str, *arguments: str, shim: bool = False) -> None:
         self._processes[name] = launch(
             module, "--config", str(self.config_path), *arguments, log=self.log_path(name),
-            shim_dir=self.run_dir if shim else None)
+            shim_dir=self.run_dir if shim and self.shim else None)
 
     def view(self) -> tuple[set[str], set[str]]:
         """Members and ready replicas in the RM's latest view."""
@@ -119,6 +132,18 @@ class LocalCluster:
         if not views:
             return set(), set()
         return tuple({name.strip() for name in part.split(",")} - {"-"} for part in views[-1])
+
+    def server_processes(self) -> dict[str, psutil.Process]:
+        """The running server processes by label, found the way the agent finds them."""
+
+        from ft_system.blackbox.discover import identify
+
+        found = {}
+        for process in component_processes():
+            identity = identify(process.info["cmdline"] or ())
+            if identity and identity[0] == "server" and str(self.config_path) in process.info["cmdline"]:
+                found[identity[1]] = process
+        return found
 
     def wait_ready(self, servers, timeout: float = 60.0) -> None:
         deadline = time.monotonic() + timeout

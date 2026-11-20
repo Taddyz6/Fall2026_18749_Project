@@ -26,7 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from ft_system.blackbox.cluster import LocalCluster, kill_tree, launch  # noqa: E402
+from ft_system.blackbox.cluster import ClusterError, LocalCluster, kill_tree, launch  # noqa: E402
 from ft_system.blackbox.collector import DEFAULT_PORT, format_summary, read_run, summarize  # noqa: E402
 from ft_system.blackbox.faults import ctl  # noqa: E402
 
@@ -114,14 +114,21 @@ def main():
             started = time.time()
             replication = cluster.config.replication
             ctl.record(run_dir, {"t": started, "event": "recording_started", "seconds": args.seconds,
-                                 "config": str(args.config), "mode": replication.mode if replication else None,
+                                 "config": str(args.config), "config_hash": cluster.config_hash,
+                                 "mode": replication.mode if replication else None,
                                  "client_interval": args.interval, "clients": args.clients,
                                  "actions": [list(action) for action in args.do]})
             say(f"[{datetime.now():%H:%M:%S}] recording {args.seconds:g} s")
             for at, kind, server, duty in sorted(args.do):
                 time.sleep(max(0.0, started + at - time.time()))
-                say(f"[{datetime.now():%H:%M:%S}] +{time.time() - started:5.1f} s  {kind} {server}: "
-                    f"{perform(cluster, kind, server, duty)}")
+                try:
+                    outcome = perform(cluster, kind, server, duty)
+                except (ctl.FaultError, ClusterError) as exc:
+                    # One action that cannot be done must not cost a long recording.
+                    outcome = f"NOT DONE: {exc}"
+                    ctl.record(run_dir, {"t": time.time(), "event": "action_failed", "action": kind,
+                                         "target": server, "error": str(exc)})
+                say(f"[{datetime.now():%H:%M:%S}] +{time.time() - started:5.1f} s  {kind} {server}: {outcome}")
             time.sleep(max(0.0, started + args.seconds - time.time()))
             kill_tree(agent.pid)  # before the system stops, so its teardown is not recorded
             ctl.record(run_dir, {"t": time.time(), "event": "recording_stopped"})

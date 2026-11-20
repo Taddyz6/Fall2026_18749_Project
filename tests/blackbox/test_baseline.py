@@ -120,6 +120,20 @@ def test_signature_survives_a_round_trip_and_names_what_differs(tmp_path):
         "client_interval: trained on 0.2, this run has 0.1"]
 
 
+def test_a_changed_config_under_the_same_name_is_noticed_by_its_fingerprint():
+    records = run()
+    for record in records:
+        if record.get("event") == "recording_started":
+            record["config_hash"] = "aaaa"
+    signature = Signature(train(records, warmup=90.0))
+
+    assert signature.meta["config_hash"] == "aaaa"
+    assert signature.mismatches({"config": "m5.toml", "config_hash": "aaaa"}) == []
+    assert signature.mismatches({"config": "m5.toml", "config_hash": "bbbb"}) == [
+        "config_hash: trained on 'aaaa', this run has 'bbbb'"]
+    assert signature.mismatches({"config": "m5.toml"}) == []          # an older recording has no fingerprint
+
+
 def test_command_line_trains_shows_and_checks(tmp_path, capsys):
     target = ["--baseline", str(tmp_path / "baseline.json")]
     write_run(tmp_path / "train", run())

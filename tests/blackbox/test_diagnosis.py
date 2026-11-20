@@ -64,6 +64,25 @@ def test_the_running_mean_follows_slow_drift_but_not_an_anomaly():
     assert stepped.band == pytest.approx((0.0, 13.0))
 
 
+def test_a_mean_that_drifted_during_a_long_change_comes_back_when_the_change_is_over():
+    """Values hover around the threshold, so the samples just under it pull the running mean up.
+
+    Level 2 starts at 192 here. The mean settles near 192; back at 120 the values are more
+    than 6 deviations under it, but where the signature says normal, so they are not
+    anomalies and the mean returns.
+    """
+
+    stats = {"mean": 120.0, "std": 5.0}
+    result = track([120.0] * 10 + [200.0, 185.0] * 150, metric="io_write_count_s", stats=stats)
+    assert result.mean > 192
+
+    for _ in range(80):
+        result.observe(120.0, "io_write_count_s", stats, "steady")
+
+    assert set(result.levels) == {0} and result.problematic == 0
+    assert result.mean == pytest.approx(120.0, abs=5)       # 5% closer with every sample
+
+
 def test_a_change_of_phase_starts_again_from_the_trained_mean():
     result = track([5.0] * 50, stats={"mean": 5.0, "std": 0.0}, metric="threads", phase="warmup")
     result.observe(4.0, "threads", {"mean": 4.0, "std": 0.0}, "steady")
@@ -250,6 +269,17 @@ def test_fault_free_and_relaunch_runs_lead_to_no_diagnosis(signature):
 
     assert replay(ordered(run()), signature) == []
     assert replay(ordered(relaunch), signature) == []
+
+
+def test_after_a_long_shared_change_the_diagnosis_returns_to_normal(signature):
+    """CPU hovering around the threshold on every replica for three minutes, then back to normal."""
+
+    busy = run(seconds=420, cpu=lambda second: (16.0 if second % 2 else 13.0) if 120 <= second < 300 else 2.0)
+
+    diagnoses = replay(ordered(busy), signature)
+
+    assert diagnoses == [] or diagnoses[-1]["status"] == HEALTHY
+    assert all(event["status"] != FAULT for event in diagnoses)
 
 
 def test_a_change_seen_by_every_replica_is_reported_as_workload_not_as_a_fault(signature):

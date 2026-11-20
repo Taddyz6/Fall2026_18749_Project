@@ -81,3 +81,25 @@ def test_command_line_draws_a_run_and_rejects_one_without_replicas(tmp_path, sig
 
     assert (tmp_path / "out" / "quiet.png").stat().st_size > 20_000
     assert "figure written to" in capsys.readouterr().out
+
+
+def is_png(path):
+    return path.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n" and path.stat().st_size > 10_000
+
+
+def test_evaluation_figures_are_written(tmp_path):
+    trials = {"paper": [{"duty": duty, "delay": 9.8 + index} for index, duty in enumerate((0.25, 0.5, 0.75, 1.0, 0.25))]
+              + [{"duty": 0.5}],                                   # one fault that was never diagnosed
+              "fast": [{"duty": duty, "delay": 5.9} for duty in (0.25, 0.5, 0.75, 1.0)]}
+    levels = [{"duty": duty, "median_ms": median, "p95_ms": 3 * median, "sent": 300, "answered": answered}
+              for duty, median, answered in ((None, 1, 300), (0.5, 7, 300), (1.0, 64000, 0))]
+    loop = [{"server": "S2", "diagnosed": 10.0, "restarted": 15.0, "ready": 22.0, "normal": 24.0},
+            {"server": "S3", "diagnosed": 9.9, "restarted": 15.2, "ready": 21.5, "normal": 23.0},
+            {"server": "S1", "diagnosed": None, "restarted": None, "ready": None, "normal": None}]
+    cost = {name: {"label": name, "mean_ms": 0.6 + index / 10, "median_ms": 1.0, "p95_ms": 2.0, "server_cpu": 0.5}
+            for index, name in enumerate(("bare", "shim", "monitored"))}
+
+    assert is_png(report.plot_detection(trials, tmp_path / "detection.png"))
+    assert is_png(report.plot_impact(levels, tmp_path / "impact.png"))
+    assert is_png(report.plot_loop(loop, tmp_path / "loop.png"))
+    assert is_png(report.plot_cost(cost, tmp_path / "deep" / "cost.png"))

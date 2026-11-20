@@ -84,6 +84,7 @@ class Session:
                              "--volume", str(self.run_dir), log=self.run_dir / "agent.log")
         replication = self.cluster.config.replication
         ctl.record(self.run_dir, {"t": time.time(), "event": "recording_started", "config": str(self.config),
+                                  "config_hash": self.cluster.config_hash,
                                   "mode": replication.mode if replication else None,
                                   "client_interval": self.interval, "clients": self.clients})
         self._tasks = [asyncio.ensure_future(self._recover()), asyncio.ensure_future(self._watch_threads())]

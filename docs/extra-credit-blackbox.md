@@ -12,8 +12,8 @@ file is changed, and nothing in M5 imports this code.
 | 4. Detection and diagnosis | Built and tested on Windows |
 | 5. Live dashboard | Built and tested on Windows |
 | 6. One-command launcher and unattended demo | Built and tested on Windows |
-| 7. Automatic recovery, client reply times, CPU by thread | Built and tested on Windows |
-| Evaluation over many trials | Not done yet |
+| Automatic recovery, client reply times, CPU by thread (in 5 and 6) | Built and tested on Windows |
+| 7. Evaluation | Run on Windows; results below |
 
 ## Quick start
 
@@ -319,21 +319,29 @@ client rate differs.
 ### Measured
 
 Trained from a five-minute fault-free run (Nov 20, Windows, three clients at 5
-requests/s each). For S2 once it is past warm-up, 217 samples:
+requests/s each, the config with nine spare clients). For S2 once it is past
+warm-up, 217 samples:
 
 | Metric | Mean | Standard deviation | Normal band (6 deviations) |
 | --- | --- | --- | --- |
-| `cpu` | 0.45% | 1.02 | 0 to 12.5% |
-| `ctx_voluntary_s` | 25.6 | 3.98 | 1.7 to 49.4 |
-| `io_write_count_s` | 121.4 | 4.75 | 48.6 to 194.2 |
-| `rss_mb` | 26.81 | 0.03 | 25.5 to 28.1 |
+| `cpu` | 0.45% | 1.00 | 0 to 12.5% |
+| `ctx_voluntary_s` | 23.6 | 3.47 | 2.8 to 44.4 |
+| `io_write_count_s` | 121.7 | 4.63 | 48.7 to 194.7 |
+| `io_write_bytes_s` | 7,760 | 307 | 1,616 to 13,904 |
+| `rss_mb` | 26.89 | 0.03 | 25.6 to 28.2 |
 | `threads` | 4.03 | 0.18 | 1.0 to 7.0 |
 
-S1 and S3 are close to these: their CPU means are 0.52% and 0.45%, and their
-context switches 26.6 and 25.4 a second. For the warm-up phase the thread band
-is 0 to 11.0, which covers the 6 threads of a young process.
+S1 and S3 are close to these: their CPU means are 0.55% and 0.37%, and their
+context switches 23.9 and 23.4 a second. For the warm-up phase the thread band
+is 0 to 10.7, which covers the 6 threads of a young process.
 
-Checked against runs that were not used for training:
+**Retrain whenever the config changes.** Bytes written per second depend on how
+many clients the config lists, because a server logs one counter per client
+with every request: with six clients listed the mean was 6,064, with twelve it
+is 7,760. The other rows differ only as two fault-free runs do anyway.
+
+An earlier signature, trained the same way with six clients listed, was checked
+against runs that were not used for training:
 
 | Run | Values judged | Beyond 6 deviations | Sustained (3 of 7 samples) |
 | --- | --- | --- | --- |
@@ -366,8 +374,8 @@ When the replicas have moved together, nobody is blamed. The diagnosis says
 "a change in workload or on the computer", because from OS metrics alone those
 two cannot be told apart.
 
-The windows and thresholds are the paper's. Three things were added because
-the recorded runs needed them:
+The windows and thresholds are the paper's. Four things were added because
+the recorded runs needed them (the fourth came out of the evaluation, section 7):
 
 - **Compare values, not only flags.** When the client load doubled, write bytes
   per second landed right at the threshold on all three servers, with about
@@ -381,6 +389,10 @@ the recorded runs needed them:
 - **Fading evidence is not a new problem.** As a fault ends its metrics return
   to normal one at a time. A new cause is reported for the same replica only
   when a metric it was not odd on before becomes odd.
+- **A value where the signature says normal is never an anomaly.** The running
+  mean can drift during a long change of workload. Each value is judged against
+  whichever is nearer, the running mean or the trained one, so the mean is free
+  to come back.
 
 ### Running it
 
@@ -407,7 +419,8 @@ to the system.
 
 ### Measured
 
-Recorded runs replayed against the signature above (Nov 20, Windows):
+Section 7 has the full evaluation. These are the first recorded runs, replayed
+against the earlier signature (Nov 20, Windows):
 
 | Run | Paper windows (7 and 15) | Fast windows (5 and 7) |
 | --- | --- | --- |
@@ -596,18 +609,132 @@ After each round no process of the system or the monitor was left running.
 After a session's launcher was killed without cleanup, `down` removed the 12
 processes it left behind.
 
+## 7. Evaluation
+
+[`scripts/ec_evaluate.py`](../scripts/ec_evaluate.py) runs the experiments and
+scores them ([`evaluate.py`](../src/ft_system/blackbox/evaluate.py)):
+
+```bash
+python scripts/ec_evaluate.py run detect quiet loop cost    # about 90 minutes
+python scripts/ec_evaluate.py report                        # tables and figures; needs matplotlib
+```
+
+| Experiment | What it does | Length |
+| --- | --- | --- |
+| `detect` | 24 faults of 35 s: every replica at 25%, 50%, 75% and 100%, twice | 31 min |
+| `quiet` | 30 minutes with no fault: three replicas killed and relaunched, the client load doubled twice | 31 min |
+| `loop` | 10 faults at 75% with automatic recovery on | 15 min |
+| `cost` | 3 minutes each: the system alone, with the dormant fault shim, with shim, agent and collector | 11 min |
+
+`report` replays each recording with both window settings, so one recording
+gives both columns below. It writes `results.md` and five figures to
+`logs/ec/eval/report/`. The fault-impact table is the calibration in section 1.
+
+### Results
+
+All recorded on Nov 20 on one Windows computer (20 logical cores) with active
+replication and three clients at 5 requests/s each, and scored against a
+signature trained with the same config.
+
+**Does it detect the fault and blame the right replica?**
+
+| | Paper's windows (7 and 15 samples) | Fast windows (5 and 7) |
+| --- | --- | --- |
+| Faults blamed on the right replica | 24 of 24 | 24 of 24 |
+| Wrong blames | 0 | 0 |
+| Precision, recall, F-score | 1.00, 1.00, 1.00 | 1.00, 1.00, 1.00 |
+| Time to diagnosis: median, longest | 10.0 s, 10.1 s | 6.0 s, 6.1 s |
+| Diagnosed as a CPU-intensive task | 24 of 24 | 24 of 24 |
+
+The time is the same at every intensity because the windows set it, not the
+fault: every level tried is far outside the CPU band from its first sample.
+During the same faults the fault-tolerance layer saw this:
+
+| Intensity | Heartbeats answered | RM view changes | Reply time of the faulty replica, median and 95th percentile |
+| --- | --- | --- | --- |
+| 25% | 208 of 208 | 0 | 0 and 17 ms |
+| 50% | 207 of 207 | 0 | 1 and 45 ms |
+| 75% | 206 of 206 | 0 | 16 and 68 ms |
+| 100% | 159 of 162 | 2 | 249 and 952 ms |
+
+**Does it raise false alarms?** In 30 minutes with no fault, no replica was
+blamed with either setting. The three kills and relaunches led to no diagnosis.
+Both doublings of the load were reported as a change in workload, after 9.1 s
+and 10.1 s (5.1 s and 6.0 s with the fast windows), and withdrawn 7 to 8 s after
+the load returned. With the fast windows there was one more such report, for 5 s:
+it coincided with 8 s of other activity on the computer, when host CPU rose
+from about 5% to as much as 50% and all three replicas' context switches rose
+together. That report is correct, and the paper's windows did not make it.
+
+**How fast is the whole loop?** With automatic recovery on, 10 of 10 faults
+were repaired with nobody touching the system:
+
+| From the injection to | Median | Longest |
+| --- | --- | --- |
+| the diagnosis | 9.7 s | 10.0 s |
+| the restart (after the diagnosis has stood 5 s) | 14.9 s | 15.5 s |
+| all three replicas ready again | 21.7 s | 22.3 s |
+
+While a fault ran, the faulty replica answered clients in a median 17 ms.
+
+**What does monitoring cost?**
+
+| Condition | Mean reply time | 95th percentile | Mean CPU of one server |
+| --- | --- | --- | --- |
+| The system alone | 0.52 ms | 1 ms | 0.43% |
+| With the dormant fault shim | 0.49 ms | 1 ms | 0.60% |
+| With shim, agent and collector | 0.51 ms | 1 ms | 0.44% |
+
+No cost to the service shows. The CPU figures differ by less than identical
+fault-free runs differ from each other (0.41% to 0.59% over six of them). The
+agent itself used 0.8% to 1.1% of one core in the three long runs.
+
+### What the evaluation changed
+
+- **A drifted mean could not come back.** In the 30-minute run, after the load
+  had been doubled for two minutes and returned, the status stayed on "change
+  in workload" for the next 8 minutes. The running mean had crept up to the
+  doubled level, so normal values looked far below it and froze it there. A
+  value is now judged against whichever is nearer, the running mean or the
+  trained one. On the recording, the old rule shows a workload change for
+  1,184 of the 1,800 seconds and the new rule for 237; the load was doubled for
+  240.
+- **The signature was stale and nothing said so.** It had been trained with six
+  clients in the config, and the config then grew to twelve. A server logs one
+  counter per configured client with every request, so its bytes written per
+  second rose from about 6,100 to about 7,800. The check compared config file
+  names. Each run now records a fingerprint of the config's contents, and a
+  difference is reported. The signature was retrained and everything above is
+  scored against it. The one difference was the 5 s report under the fast
+  windows, which the stale signature had not produced.
+
+### Limits of this evaluation
+
+- One computer, Windows, active replication, one kind of fault, one fault at a
+  time.
+- A perfect score on 24 faults shows that this fault is easy for this detector
+  at 25% and above. It does not bound the error rate, and nothing weaker than
+  25% was tried.
+- The signature was trained minutes to hours before the runs, on the same
+  computer. A signature that is days old has not been tried.
+- The cost comparison is one 3-minute run per condition.
+- The recovery in `loop` acted on diagnoses made live with the older rule and
+  the older signature. Neither matters for a CPU fault, but those ten trials
+  were not rerun.
+
 ## Tests
 
 ```bash
 python -m pytest tests/blackbox -q
 ```
 
-159 tests. They cover the fault injector (in a stand-in process that takes
+171 tests. They cover the fault injector (in a stand-in process that takes
 `--server-id`), discovery, the agent (against stand-in processes with component
 command lines), the collector, the signature, each detection and blame rule on
 synthetic series, the diagnosis on synthetic recorded runs, the figures, and
-the dashboard's frames and HTTP routes, the recovery rules, and the session's
-actions and client load changes with stand-in processes. The agent and session tests are skipped
+the dashboard's frames and HTTP routes, the recovery rules, the scoring of
+evaluation runs, and the session's actions and client load changes with
+stand-in processes. The agent and session tests are skipped
 where `psutil` is not installed, and the figure tests where `matplotlib` is
 not. The page itself was checked by eye in a headless browser, in both themes,
 with the pointer over a chart and a matrix cell, and by pressing a button.

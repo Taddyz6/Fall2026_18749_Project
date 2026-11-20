@@ -53,7 +53,7 @@ METRIC_NAMES = {
     "rss_mb": "Memory (MB)",
 }
 # What makes two runs comparable: where it ran, and what it was asked to do.
-META_KEYS = ("host", "os", "python", "cores", "interval", "config", "mode", "client_interval")
+META_KEYS = ("host", "os", "python", "cores", "interval", "config", "config_hash", "mode", "client_interval")
 
 
 def describe(values: Sequence[float]) -> dict[str, float]:
@@ -111,7 +111,7 @@ def describe_run(records: Iterable[dict]) -> dict:
             meta.update({key: record[key] for key in ("host", "os", "python", "cores", "interval")
                          if key in record})
         elif record.get("event") == "recording_started":
-            meta.update({key: record[key] for key in ("config", "mode", "client_interval", "seconds")
+            meta.update({key: record[key] for key in ("config", "config_hash", "mode", "client_interval", "seconds")
                          if key in record})
     return meta
 
