@@ -81,24 +81,25 @@ When **A** sees `S3 is ready` and confirms `ready: S1, S2, S3`, start C1, C2 and
 
 ## Three fault rounds
 
-Run three rounds in Active, then three in Passive. Wait until all three clients receive replies before injecting a fault. Press `Control+C` in the target **server window**, or click its red close button and confirm **Terminate**. **Keep the LFDs and clients running.**
+In each round, press `Control+C` in the target **server window**, or click its red close button and confirm **Terminate**. Keep the LFDs and clients running. While RM shows two members, **A** shows the TA a fresh reply in each of C1, C2 and C3. A calls the next round only when RM again shows **`ready: S1, S2, S3`**.
 
-| Round | Active | Passive (S1 is the initial primary here) |
-| --- | --- | --- |
-| 1 | C stops S2. The TA can choose any first replica. | B stops primary S1. All three clients log `primary changed`, the new primary continues checkpointing, and S1 returns with `role = backup`. |
-| 2 | C stops S2 again in its **new window**. | B stops the recovered S1 backup again. The current primary keeps replying and checkpointing. |
-| 3 | D stops S3, a different replica. | Stop the other backup. If S2 is primary, D stops S3. If S3 is primary, C stops S2. |
+### Active demo
 
-**Show the TA these three events each round.**
+Start once all three clients have received replies. The TA can choose any replica for the first round. This example starts with S2 on C.
 
-1. The LFD detects a missed heartbeat and GFD updates membership. While A's RM shows two members, C1, C2 and C3 each receive new replies.
-2. For S2, RM logs `asking LFD2 to ensure replica S2 is running`. A fresh S2 window opens automatically on C and LFD2 logs its new PID.
-3. The replacement logs `installed checkpoint`. A waits for RM to show **`ready: S1, S2, S3`** again before starting the next round.
+1. **C stops S2.** LFD2 detects the failure and GFD updates membership. A shows RM's `asking LFD2 to ensure replica S2 is running`. C shows the new S2 window that opens automatically and the new PID in LFD2's log.
+2. **C stops S2 again in the new window from round one.** C shows the replacement logging requests, printing `installed checkpoint`, replaying the outstanding requests and resuming replies.
+3. **D stops a different replica, S3.** D shows S3 restarting automatically and recovering its state. A confirms all three replicas are ready. Each client delivers one reply per request. The other replicas return the same value and the client logs `Discarded duplicate reply`.
 
-A recovering active replica logs requests, installs a checkpoint and replays outstanding requests before replying. Each client delivers one reply per request. Replies from different replicas should agree.
+### Passive demo
 
-**When switching to Passive or ending the demo**, stop **the three clients → RM → the LFDs on B, C and D → GFD**. Each LFD stops its own server on exit.
-To start Passive, use `configs/m5.passive.distributed.toml` and `logs/m5-passive/`. Start the designated primary's LFD first and wait for it to become ready before starting the other two. Show the primary sending checkpoints to both backups before round one.
+Shut down Active in the order **three clients → RM → LFDs on B, C and D → GFD**. Each LFD stops its server on exit. Repeat startup with `configs/m5.passive.distributed.toml` and `logs/m5-passive/`.
+
+Start the designated primary's LFD first and wait for its replica to become ready before starting the others. Here B starts LFD1 first to make S1 primary. Before round one, A shows replies in all three client windows and B shows S1 sending checkpoints to S2 and S3.
+
+1. **B stops primary S1.** A identifies the newly elected primary in RM and shows `primary changed` followed by replies in all three clients. The new primary keeps sending checkpoints. B shows `role = backup` and `installed checkpoint` in the new S1 window.
+2. **B stops S1 again in its new window.** This time S1 is the recovered backup. The current primary keeps replying and sending checkpoints to the other backup. B shows S1 returning automatically as a backup again.
+3. **A checks RM and names the other backup to stop.** If S2 is primary, D stops S3. If S3 is primary, C stops S2. That operator shows the replacement installing a checkpoint. A confirms all three replicas are ready, then the team shuts down in the order above.
 
 ### Passive consistency and latency
 

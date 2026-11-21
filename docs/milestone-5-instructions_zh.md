@@ -81,24 +81,25 @@ B/C/D 各自只开 LFD。RM 发指令后，LFD 自动打开本机 server 窗口�
 
 ## 三轮故障
 
-先跑 Active 三轮，再跑 Passive 三轮。等三个客户端都收到回复再注入故障。每轮在目标 **server 窗口**按 `Control+C`，或点红色关闭按钮并确认“终止”。**保持 LFD 和客户端运行。**
+每轮在目标 **server 窗口**按 `Control+C`，或点红色关闭按钮并确认“终止”。保持 LFD 和客户端运行。**A** 在 RM 只剩两个成员时，给 TA 看 C1、C2、C3 各自收到的新回复。等 RM 再次显示 **`ready: S1, S2, S3`**，A 再通知开始下一轮。
 
-| 轮次 | Active | Passive（假设 S1 是初始主） |
-| --- | --- | --- |
-| 1 | C 停 S2。TA 可任选第一个副本。 | B 停主副本 S1。三个客户端显示 `primary changed`，新主继续发 checkpoint。S1 恢复后显示 `role = backup`。 |
-| 2 | C 再停**新窗口里的 S2**。 | B 再停刚恢复的 S1 backup。当前主继续回复并发 checkpoint。 |
-| 3 | D 停 S3，换一个副本。 | 停另一个 backup。新主是 S2 就由 D 停 S3，新主是 S3 就由 C 停 S2。 |
+### Active 演示
 
-**每轮给 TA 看这三个时刻。**
+三个客户端都收到回复后开始。第一轮可任选副本，下面以 C 上的 S2 为例。
 
-1. LFD 发现心跳中断，GFD 更新成员。A 的 RM 显示只剩两个成员时，C1、C2、C3 仍各自收到新回复。
-2. 以 S2 为例，RM 打印 `asking LFD2 to ensure replica S2 is running`。C 自动弹出新的 S2 窗口，LFD2 打印新 PID。
-3. 新副本打印 `installed checkpoint`。A 等 RM 再次显示 **`ready: S1, S2, S3`**，才开始下一轮。
+1. **C 停 S2。** LFD2 报告故障，GFD 更新成员。A 展示 RM 的 `asking LFD2 to ensure replica S2 is running`，C 展示自动弹出的 S2 窗口和 LFD2 打印的新 PID。
+2. **C 在第一轮弹出的新窗口里再停一次 S2。** C 展示这次重启的 S2 先记录请求，打印 `installed checkpoint`，回放遗漏的请求后恢复回复。
+3. **D 停另一个副本 S3。** D 展示 S3 自动重启并同步状态。A 确认三个副本都 ready。客户端对同一请求只采纳一个回复，其余副本的回复值一致，日志显示 `Discarded duplicate reply`。
 
-Active 的新副本先记录请求，安装 checkpoint 后回放其中未包含的请求，随后开始回复。各副本的回复值应一致，客户端对同一请求只采纳一个回复。
+### Passive 演示
 
-**切换到 Passive 或结束演示时**，按 **三个客户端 → RM → B/C/D 的 LFD → GFD** 停机。LFD 退出会关闭本机 server。
-启动 Passive 时，改用 `configs/m5.passive.distributed.toml` 和日志目录 `logs/m5-passive/`。先启动指定主副本的 LFD，等它 ready，再启动其余两个。第一轮前先展示主副本向两个 backup 发 checkpoint。
+先按 **三个客户端 → RM → B/C/D 的 LFD → GFD** 停掉 Active。LFD 退出时会关闭本机 server。用 `configs/m5.passive.distributed.toml` 和日志目录 `logs/m5-passive/` 重新启动。
+
+指定谁当初始主，就先启动谁的 LFD，等该副本 ready 再启动其余副本。本例由 B 先开 LFD1，让 S1 当主。第一轮前，A 展示三个客户端都有回复，B 展示 S1 向 S2、S3 发 checkpoint。
+
+1. **B 停主副本 S1。** A 指出 RM 选出的新主，展示三个客户端的 `primary changed` 和后续回复。新主继续发 checkpoint。B 展示恢复的 S1 打印 `role = backup` 和 `installed checkpoint`。
+2. **B 在新窗口里再停一次 S1。** 这次停的是刚恢复的 backup。当前主继续回复、向另一个 backup 发 checkpoint。B 展示 S1 再次自动恢复为 backup。
+3. **A 根据 RM 的当前主指定另一个 backup。** 新主是 S2，就由 D 停 S3。新主是 S3，就由 C 停 S2。该机展示新 backup 安装 checkpoint，A 确认三个副本都 ready，再按上面的顺序停机。
 
 ### Passive 的一致性与延迟
 
