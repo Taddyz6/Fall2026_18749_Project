@@ -37,6 +37,57 @@ Runtime code has no third-party dependencies. The `dev` extra is for pytest.
 Each computer may use a different checkout path. Stop any earlier milestone
 demo first because the example configs reuse its ports.
 
+### Find each Mac's LAN IP and share the configs through `m5`
+
+**Everyone checks their own IP.** Connect all four Macs to the demo LAN. On each Mac, run
+`networksetup -listallhardwareports` in Terminal. Find `Hardware Port: Wi-Fi` for Wi-Fi or
+the adapter with the cable plugged in for Ethernet. Read the `Device` line below it.
+If it says `en0`, run the command below. If it says `en5`, replace `en0` with `en5`.
+
+```bash
+ipconfig getifaddr en0
+```
+
+The single line of output is this Mac's IPv4 address on the demo LAN. B, C and D each
+send A **both their computer letter and their IP**, for example `C = 192.168.1.12`.
+A records their own IP the same way.
+
+**A edits both configs.** From the repository root, A runs `git switch m5`, then
+`git pull --ff-only origin m5`. Open `configs/m5.active.distributed.toml` and
+`configs/m5.passive.distributed.toml`. Set all five `advertised_host` values in
+**each file** using the table below. For example, if C reported the address above, enter
+`advertised_host = "192.168.1.12"` under `[server.S2]` in each file.
+
+| Whose IPv4 | Sections to edit in both TOML files |
+| --- | --- |
+| A | `[rm]` and `[gfd]`, both set to A |
+| B | `[server.S1]` |
+| C | `[server.S2]` |
+| D | `[server.S3]` |
+
+**A saves, commits and pushes the configs.** Once the push succeeds, send B, C and D
+the commit ID printed by the last command and A's IPv4. They will use A's address
+to check connectivity to RM and GFD.
+
+```bash
+# A
+git add -- configs/m5.active.distributed.toml configs/m5.passive.distributed.toml
+git commit -m "Update M5 demo LAN addresses"
+git push origin m5
+git rev-parse --short HEAD
+```
+
+**After A shares the commit ID**, B, C and D each run these three commands from their
+own repository root. The last line should print the same commit ID A shared.
+Once all four match, A can start RM and GFD.
+
+```bash
+# B / C / D
+git switch m5
+git pull --ff-only origin m5
+git rev-parse --short HEAD
+```
+
 ## Four-computer layout
 
 | Computer | Example IPv4 | Components | Inbound TCP ports |
@@ -46,12 +97,9 @@ demo first because the example configs reuse its ports.
 | C | `192.168.1.12` | LFD2 and S2 | 5202, 6202, 8202 |
 | D | `192.168.1.13` | LFD3 and S3 | 5203, 6203, 8203 |
 
-Replace **every `advertised_host`** in both distributed configs: `[rm]` and `[gfd]`
-use A's current IPv4, and `[server.S1]`/S2/S3 use B/C/D's IPv4 respectively. Keep
-`bind_host = "0.0.0.0"`. Find addresses with `ipconfig getifaddr en0` on a Mac
-(choose the active interface if different), or `ip -4 addr` on Linux. Use a LAN
-where the four machines can reach each other; permit the listed ports in their
-firewalls. Copy each edited config identically to all four hosts.
+The IPv4 addresses above are examples. Allow the listed inbound TCP ports in each
+computer's firewall. The configured `bind_host = "0.0.0.0"` makes each service listen
+on all its local interfaces. For a Linux rehearsal, `ip -4 addr` shows the demo interface's IPv4.
 
 All config paths in launch commands refer to files on the **local** host. Check
 the configs before opening the demo windows:
@@ -76,10 +124,8 @@ On **A**, start RM first, then GFD:
 ```
 
 **On A**, check for `RM: 0 members`, `GFD: 0 members`, and GFD's notification of RM.
-Leave both processes running. In A's network settings, open the Wi-Fi or Ethernet
-connection used for the demo and find its IPv4 address. It should match
-`advertised_host` in both the `[rm]` and `[gfd]` sections of the shared config.
-Give that address to the people on B, C and D.
+Leave both processes running. For the connectivity check below, B, C and D use
+the IPv4 address A entered under `[rm]` and `[gfd]` during setup.
 
 **On B, C and D**, each person can open a terminal on their own computer before
 starting the LFD and check whether it can reach A. If A reports `192.168.1.42`,

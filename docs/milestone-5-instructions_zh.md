@@ -33,6 +33,52 @@ python3 -m venv .venv
 运行系统不需要第三方库；`dev` 用于安装 pytest。各电脑的仓库绝对路径可以不同。
 开始前先停止其他 milestone 的演示，因为示例配置复用了原端口。
 
+### 获取四台 Mac 的局域网 IP，并通过 `m5` 同步配置
+
+**A、B、C、D 各自查本机 IP。** 四台 Mac 先连到演示用的同一局域网。每个人在自己的终端运行
+`networksetup -listallhardwareports`。用 Wi-Fi 就找 `Hardware Port: Wi-Fi`，用网线就找接线的网卡。
+看它下面的 `Device` 一行。如果是 `en0`，运行下面的命令。如果是 `en5`，就把命令里的 `en0` 换成 `en5`。
+
+```bash
+ipconfig getifaddr en0
+```
+
+输出的一行就是这台 Mac 在演示网络上的 IPv4。B、C、D 把**电脑代号和 IP 一起**发给 A，
+例如 `C = 192.168.1.12`。A 也用同样的方法记下自己的 IP。
+
+**A 统一改两份配置。** A 在仓库根目录先运行 `git switch m5`，再运行 `git pull --ff-only origin m5`。
+打开 `configs/m5.active.distributed.toml` 和 `configs/m5.passive.distributed.toml`，
+在**每份文件**中按下表填写五处 `advertised_host`。例如，若 C 报的是上面的地址，就在两份文件的
+`[server.S2]` 下都填 `advertised_host = "192.168.1.12"`。
+
+| 谁的 IPv4 | 两份 TOML 中要填写的节 |
+| --- | --- |
+| A | `[rm]` 和 `[gfd]`，两处都填 A |
+| B | `[server.S1]` |
+| C | `[server.S2]` |
+| D | `[server.S3]` |
+
+**A 保存后提交并推送。** 推送成功后，把最后一条命令显示的提交号和 A 的 IPv4 发给 B、C、D。
+稍后大家会用 A 的地址检查能否连到 RM 和 GFD。
+
+```bash
+# A
+git add -- configs/m5.active.distributed.toml configs/m5.passive.distributed.toml
+git commit -m "Update M5 demo LAN addresses"
+git push origin m5
+git rev-parse --short HEAD
+```
+
+**B、C、D 收到 A 的提交号后**，各自在自己的仓库根目录运行下面三行。最后一行应显示和 A 一样的提交号。
+四个人核对一致后，A 就可以启动 RM 和 GFD。
+
+```bash
+# B / C / D
+git switch m5
+git pull --ff-only origin m5
+git rev-parse --short HEAD
+```
+
 ## 四台电脑的布局
 
 | 电脑 | 示例 IPv4 | 组件 | 需要放行的入站 TCP 端口 |
@@ -42,11 +88,8 @@ python3 -m venv .venv
 | C | `192.168.1.12` | LFD2、S2 | 5202、6202、8202 |
 | D | `192.168.1.13` | LFD3、S3 | 5203、6203、8203 |
 
-修改两个 distributed 配置文件中的**每一个 `advertised_host`**：`[rm]` 和 `[gfd]`
-填 A 当前的 IPv4，`[server.S1]` / S2 / S3 分别填 B/C/D 的地址。
-`bind_host = "0.0.0.0"` 保持不变。Mac 可用 `ipconfig getifaddr en0` 查询地址
-（接口不同时替换为当前接口），Linux 使用 `ip -4 addr`。四台机器必须能互通，
-防火墙放行上表端口。将修改后的每个配置文件原样复制到全部四台电脑。
+表中 IPv4 是示例。按上表在各机的防火墙放行对应的入站 TCP 端口。配置中的 `bind_host = "0.0.0.0"`
+让服务监听本机各接口。如果用 Linux 排练，可用 `ip -4 addr` 查看演示网卡的 IPv4。
 
 所有启动参数中的路径都指向**执行命令的这台机器**上的文件。启动前可检查配置：
 
@@ -69,8 +112,7 @@ B、C、D 各自手动开一个 LFD 窗口。RM 发来启动指令后，LFD 会�
 ```
 
 **A 的同学**确认两个窗口分别显示 `RM: 0 members` 和 `GFD: 0 members`，并看到 GFD 已通知 RM。
-保持这两个进程运行。在 A 的网络设置中打开演示用的 Wi-Fi 或有线连接，查看 IPv4 地址，核对它与共享配置中
-`[rm]`、`[gfd]` 的 `advertised_host` 一致，再把这个地址告诉 B、C、D。
+保持这两个进程运行。B、C、D 接下来检查连通性时，使用准备阶段 A 填在 `[rm]` 和 `[gfd]` 中的 IPv4。
 
 **B、C、D 的同学**可以在启动 LFD 前，各自在自己的电脑上打开一个终端，检查能否连到 A。
 假设 A 报的地址是 `192.168.1.42`，每个人都运行下面两行。如果 A 报的是其他地址，
