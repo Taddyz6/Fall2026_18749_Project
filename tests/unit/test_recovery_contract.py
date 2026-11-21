@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_m5_configs_enable_recovery_with_one_lfd_per_replica(mode, layout):
     config = load_config(ROOT / "configs" / f"m5.{mode}.{layout}.toml")
     assert config.recovery.enabled
+    assert config.recovery.mac_terminal == (layout == "distributed")
     assert config.replication.mode == mode
     assert sorted(lfd.server_id for lfd in config.lfds.values()) == ["S1", "S2", "S3"]
     assert not load_config(ROOT / "configs" / f"m4.{mode}.{layout}.toml").recovery.enabled
@@ -24,6 +25,7 @@ def test_m5_configs_enable_recovery_with_one_lfd_per_replica(mode, layout):
 
 @pytest.mark.parametrize("old,new,match", [
     ("enabled = true", 'enabled = "yes"', "boolean"),
+    ("enabled = true", 'enabled = true\nmac_terminal = "yes"', "mac_terminal"),
     ("restart_delay = 1.0", "restart_delay = -1", "restart_delay"),
     ("restart_delay = 1.0", "restart_delay = nan", "restart_delay"),
     ("restart_retry = 1.0", "restart_retry = 0", "restart_retry"),

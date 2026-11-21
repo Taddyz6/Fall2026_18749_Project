@@ -57,8 +57,9 @@ M5 adds RM-directed **automatic recovery** in active and warm-passive modes. Ena
 server child, then the existing M4 checkpoint/readiness flow restores its state.
 Repeated launch commands do not create duplicate children. Recovered passive
 primaries return as backups; the initial primary can be any replica by starting
-its LFD first. The LFD uses its local interpreter/config, so four-host recovery
-needs no SSH or shared paths.
+its LFD first. On a Mac the four-host configs open each managed server in its
+own Terminal window. Press Control+C there or close the server window to trigger
+recovery. The LFD uses its local interpreter/config and records the server log.
 
 ```bash
 .venv/bin/python scripts/m5_smoke.py

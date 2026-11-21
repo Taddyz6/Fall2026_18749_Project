@@ -1,11 +1,14 @@
 import asyncio
 import io
+import os
+import sys
 
 import pytest
 
 from ft_system.common.config import ConfigError, LfdConfig, RmConfig, ServerConfig
 from ft_system.common.logging import EventLogger
 from ft_system.common.protocol import ProtocolError, build_rm_command
+from ft_system.lfd import terminal
 from ft_system.lfd.supervisor import ReplicaSupervisor
 from ft_system.server.app import ServerApp
 from tests.helpers import eventually, free_ports
@@ -61,6 +64,82 @@ async def test_shutdown_reaps_child_and_rejects_late_commands(supervisor):
     assert not supervisor.pid_path.exists()
     assert (await supervisor.ensure_running())["payload"]["status"] == "failed"
     await supervisor.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires a POSIX controlling terminal")
+async def test_terminal_ctrl_c_window_close_and_lfd_shutdown(supervisor, monkeypatch):
+    # Substitute only the GUI. The real shell, server, tty signals and log pipeline run.
+    windows = []
+    masters = set()
+
+    async def open_pty_window(command, title):
+        master, slave = os.openpty()
+        masters.add(master)
+        try:
+            shell = await asyncio.create_subprocess_exec(
+                sys.executable, "-c",
+                "import os, sys; os.login_tty(int(sys.argv[1])); os.execl('/bin/sh', 'sh', '-c', sys.argv[2])",
+                str(slave), command, pass_fds=(slave,),
+            )
+        finally:
+            os.close(slave)
+        windows.append((master, shell, title))
+
+    monkeypatch.setattr(terminal, "_open_window", open_pty_window)
+    supervisor.mac_terminal = True
+    pids = set()
+    try:
+        for action in ("ctrl-c", "close", "shutdown"):
+            results = await asyncio.gather(*(supervisor.ensure_running() for _ in range(3)))
+            assert [r["payload"]["status"] for r in results] == ["started", "running", "running"]
+            pid = int(supervisor.pid_path.read_text())
+            assert pid == supervisor.pid and pid not in pids
+            pids.add(pid)
+            assert len(windows) == len(pids)
+            master, shell, title = windows[-1]
+            assert title == "S1"
+            assert pid == shell.pid
+            async with asyncio.timeout(5):
+                while not await supervisor._already_listening():
+                    await asyncio.sleep(.02)
+            console = await asyncio.wait_for(asyncio.to_thread(os.read, master, 4096), 3)
+            assert b"heartbeat" in console
+            await eventually(lambda: supervisor.log_path.read_text().count("receives heartbeat from LFD1") == len(pids))
+            if action == "ctrl-c":
+                assert os.tcgetpgrp(master) == os.getpgid(pid)
+                os.write(master, b"\x03")
+            elif action == "close":
+                masters.remove(master)
+                os.close(master)
+            else:
+                await supervisor.close()
+            await eventually(lambda: supervisor.pid is None and not supervisor.pid_path.exists())
+            if master in masters:
+                masters.remove(master)
+                os.close(master)
+            await asyncio.wait_for(shell.wait(), 5)
+            with pytest.raises(ProcessLookupError):
+                os.kill(pid, 0)
+    finally:
+        await supervisor.close()
+        for master in masters:
+            os.close(master)
+        await asyncio.gather(*(shell.wait() for _, shell, _ in windows))
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses a private Unix socket")
+async def test_terminal_launch_error_is_returned_to_rm(supervisor, monkeypatch):
+    async def denied(command, title):
+        raise OSError("Terminal automation denied")
+
+    monkeypatch.setattr(terminal, "_open_window", denied)
+    supervisor.mac_terminal = True
+    try:
+        result = (await supervisor.ensure_running())["payload"]
+        assert result["status"] == "failed" and "automation denied" in result["detail"]
+        assert supervisor.pid is None and not supervisor.pid_path.exists()
+    finally:
+        await supervisor.close()
 
 
 async def test_existing_manual_replica_is_neither_duplicated_nor_stopped(supervisor):
@@ -127,6 +206,25 @@ async def test_cancellation_during_spawn_does_not_orphan_child(supervisor, monke
     finally:
         release.set()
         await supervisor.close()
+
+
+async def test_cancelled_launch_failure_still_stops_the_recovery_task(supervisor, monkeypatch):
+    opening, release = asyncio.Event(), asyncio.Event()
+
+    async def fail_launch():
+        opening.set()
+        await release.wait()
+        raise OSError("window closed before launch")
+
+    monkeypatch.setattr(supervisor, "_launch", fail_launch)
+    task = asyncio.create_task(supervisor.ensure_running())
+    await opening.wait()
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert supervisor.pid is None
+    await supervisor.close()
 
 
 @pytest.mark.parametrize("destination,target,command", [

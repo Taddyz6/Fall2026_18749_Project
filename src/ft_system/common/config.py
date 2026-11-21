@@ -76,6 +76,7 @@ class RecoveryConfig:
     enabled: bool = False
     restart_delay: float = 1.0
     restart_retry: float = 1.0
+    mac_terminal: bool = False
 
 
 @dataclass(frozen=True)
@@ -306,8 +307,12 @@ def load_config(path: str | Path) -> AppConfig:
         enabled = raw.get("enabled", False)
         if not isinstance(enabled, bool):
             raise ConfigError("recovery.enabled must be a boolean")
+        mac_terminal = raw.get("mac_terminal", False)
+        if not isinstance(mac_terminal, bool):
+            raise ConfigError("recovery.mac_terminal must be a boolean")
         recovery = RecoveryConfig(
             enabled=enabled,
+            mac_terminal=mac_terminal,
             restart_delay=_non_negative_number(raw.get("restart_delay", 1.0), "recovery.restart_delay"),
             restart_retry=_positive_number(raw.get("restart_retry", 1.0), "recovery.restart_retry"),
         )

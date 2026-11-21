@@ -54,7 +54,8 @@ async def run(args: argparse.Namespace) -> None:
     if app_config.recovery.enabled:
         log_path = args.replica_log or Path("logs/m5") / f"{server.replica_id}.log"
         supervisor = ReplicaSupervisor(lfd_config, server, app_config.rm,
-                                       args.config, log_path, logger)
+                                       args.config, log_path, logger,
+                                       mac_terminal=app_config.recovery.mac_terminal)
     reporter = (GfdReporter(lfd_config.lfd_id, server.replica_id, app_config.gfd, logger)
                 if app_config.gfd is not None else None)
     app = LfdApp(lfd_config, endpoint, logger,

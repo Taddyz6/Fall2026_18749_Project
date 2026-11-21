@@ -22,8 +22,8 @@ GFD 仍通过 heartbeat 确定 membership，副本安装 checkpoint 后才报告
 | `configs/m5.passive.distributed.toml` | 四机 passive |
 | `scripts/m5_smoke.py` | 单机自动故障与恢复验收 |
 
-四台电脑使用同一份 `m5` 代码、Python 3.11 或更新版本。以下命令使用 macOS/Linux
-shell；Windows 可使用 WSL 执行相同命令。在每台电脑的仓库根目录运行：
+四台 Mac 使用同一份 `m5` 代码和 Python 3.11 或更新版本，Intel 和 Apple Silicon 可以混用。
+每个人在自己的 Mac 上打开终端，进入仓库根目录，创建本机的虚拟环境。
 
 ```bash
 python3 -m venv .venv
@@ -38,9 +38,9 @@ python3 -m venv .venv
 | 电脑 | 示例 IPv4 | 组件 | 需要放行的入站 TCP 端口 |
 | --- | --- | --- | --- |
 | A（sacred） | `192.168.1.10` | RM、GFD、C1、C2、C3 | 7300、7200 |
-| B | `192.168.1.11` | LFD1 及其子进程 S1 | 5201、6201、8201 |
-| C | `192.168.1.12` | LFD2 及其子进程 S2 | 5202、6202、8202 |
-| D | `192.168.1.13` | LFD3 及其子进程 S3 | 5203、6203、8203 |
+| B | `192.168.1.11` | LFD1、S1 | 5201、6201、8201 |
+| C | `192.168.1.12` | LFD2、S2 | 5202、6202、8202 |
+| D | `192.168.1.13` | LFD3、S3 | 5203、6203、8203 |
 
 修改两个 distributed 配置文件中的**每一个 `advertised_host`**：`[rm]` 和 `[gfd]`
 填 A 当前的 IPv4，`[server.S1]` / S2 / S3 分别填 B/C/D 的地址。
@@ -54,9 +54,8 @@ python3 -m venv .venv
 .venv/bin/python -c 'from ft_system.common.config import load_config; c = load_config("configs/m5.active.distributed.toml"); print(c.recovery); print(c.servers)'
 ```
 
-系统共有 **11 个业务进程**：RM、GFD、三个 LFD、三个 server 子进程、三个 client。
-展示时使用 11 个终端窗口：八个直接运行组件，另外三个用 `tail` 显示 server 日志。
-`tail` 只是日志查看器，不算额外的容错组件。
+演示时共有 **11 个业务窗口**。A 开五个，分别运行 RM、GFD 和三个 client。
+B、C、D 各自手动开一个 LFD 窗口。RM 发来启动指令后，LFD 会在本机自动开第二个窗口运行 server。
 
 ## 启动 active 演示
 
@@ -88,11 +87,9 @@ nc -vz 192.168.1.42 7200
 - 若某一行显示 `Connection refused`，请 A 的同学检查对应进程是否正在运行。例如只有 7200 被拒绝，就先看 A 的 GFD 窗口。
 - 若显示 `timed out`，先确认命令里的 IP 与 A 报的一致，再检查演示网络和 A 的防火墙是否允许连接该端口。
 
-B、C、D 各用两个终端。终端 1 运行本机 LFD，显示 LFD 的输出。LFD 按 A 上 RM 的指令
-自动启动或重启本机 server，把 server 的输出写入 `--replica-log` 指定的文件。
-LFD 显示 `launched` 和新 PID 后，就可以在终端 2 用 `tail -n 80 -F` 给 TA 看 server 日志。
-它先显示文件最近 80 行，然后实时显示新输出。server 自动重启后仍写入同一文件，
-原窗口可以接着看。关掉这个查看窗口，LFD 和 server 仍会继续运行。
+保持 B、C、D 的 LFD 窗口运行。两份四机配置都已开启 `[recovery].mac_terminal = true`。
+首次启动时，如果 macOS 询问是否允许控制“终端”，点**允许**。自动打开的窗口前台运行
+真实的 server，直接显示实时日志。每次重启的输出也会追加到 `--replica-log` 指定的文件中。
 
 **B 先在终端 1 启动 LFD1。**
 
@@ -103,11 +100,7 @@ LFD 显示 `launched` 和新 PID 后，就可以在终端 2 用 `tail -n 80 -F` 
   --lfd-id LFD1 --replica-log logs/m5-active/S1.log
 ```
 
-B 在终端 2 查看 S1 的日志。
-
-```bash
-tail -n 80 -F logs/m5-active/S1.log
-```
+B 会看到新的 **S1** 窗口，里面开始打印 S1 的日志。
 
 **A** 在自己的 RM 窗口看到 `RM: S1 is ready (i_am_ready = 1)` 后，通知 **C**。
 C 这时在自己的终端 1 启动 LFD2。
@@ -119,11 +112,7 @@ C 这时在自己的终端 1 启动 LFD2。
   --lfd-id LFD2 --replica-log logs/m5-active/S2.log
 ```
 
-C 在终端 2 查看 S2 的日志。
-
-```bash
-tail -n 80 -F logs/m5-active/S2.log
-```
+C 会看到新的 **S2** 窗口。
 
 **A** 在 RM 窗口看到 `RM: S2 is ready (i_am_ready = 1)` 后，通知 **D**。
 D 这时在自己的终端 1 启动 LFD3。
@@ -135,11 +124,7 @@ D 这时在自己的终端 1 启动 LFD3。
   --lfd-id LFD3 --replica-log logs/m5-active/S3.log
 ```
 
-D 在终端 2 查看 S3 的日志。
-
-```bash
-tail -n 80 -F logs/m5-active/S3.log
-```
+D 会看到新的 **S3** 窗口。
 
 **A** 在 RM 窗口看到 `RM: S3 is ready (i_am_ready = 1)` 后，确认最新 view 显示
 `members: S1, S2, S3; ready: S1, S2, S3`。随后 A 再开三个终端，分别启动 C1、C2、C3，每个终端运行一条命令。
@@ -156,22 +141,16 @@ tail -n 80 -F logs/m5-active/S3.log
 
 ## Active 三轮故障
 
-使用本机 LFD 写入的当前 PID；每次恢复后 PID 都会变化。例如在 **C** 上执行：
-
-```bash
-cat logs/m5-active/S2.pid
-ps -p "$(cat logs/m5-active/S2.pid)" -o pid=,command=
-kill -KILL "$(cat logs/m5-active/S2.pid)"
-```
-
-确认 PID 对应 `ft_system.server.main --server-id S2`。只杀 server，保持 LFD 运行。
-**在 `tail` 窗口按 Ctrl-C 只会关闭日志查看器，不会杀掉副本。** 不需要再次手动执行
-server 启动命令。
+以 **C** 为例。点进自动打开的 **S2 server 窗口**，按 **Control+C**，S2 收到中断后退出。
+也可以直接点这个窗口左上角的红色关闭按钮。如果 macOS 询问是否终止窗口内的进程，点**终止**。
+保持 LFD2 的窗口开着。RM 要求恢复时，C 会自动弹出一个**新的 S2 窗口**。等 A 的同学
+确认三个副本都 ready，再进行下一轮。如果旧窗口显示“进程已完成”，下一轮操作新窗口。
+Control+Z 会暂停进程，原进程仍占用端口。
 
 | 轮次 | 操作 | 必须观察到的结果 |
 | --- | --- | --- |
 | 1 | 杀任意副本，例如 S2 | LFD 检测故障，GFD/RM 剩两个成员；客户端继续；RM 指示 LFD2 启动 S2，新 PID 出现，状态同步，恢复三个 ready 副本 |
-| 2 | 完全恢复后，再杀同一个 S2，使用新 PID | 再次自动完成整个流程，包括重新传输状态 |
+| 2 | 完全恢复后，关闭**新弹出的 S2 窗口**并确认终止 | 再次自动完成整个流程，包括重新传输状态 |
 | 3 | 完全恢复后，杀另一个副本，例如 D 上的 S3 | 再次自动恢复，三个客户端持续运行，最终三个副本 ready |
 
 每轮恢复按顺序检查：
@@ -203,7 +182,8 @@ server 启动命令。
 | 2 | 再杀刚恢复的 S1 backup | RM/LFD1 再次将它恢复为 backup，当前 primary 持续回复并发送 checkpoint |
 | 3 | 杀另一个 backup，避开当前 primary | 该 backup 自动恢复并接收 checkpoint，三个副本再次 ready |
 
-故障命令同前，PID 文件换成 `logs/m5-passive/<副本>.pid`。核对：
+每轮都在目标副本**当前的 server 窗口**按 Control+C 或点红色关闭按钮。本机 LFD 会按 RM 指令
+自动打开替代副本的新窗口。现场核对以下现象。
 
 - RM 输出 `primary S1 failed; new primary is ...`，三个 client 均输出 `primary changed`。
 - 新 primary 向 backup 发送 checkpoint，并回复三个 client。
@@ -259,6 +239,7 @@ client 仍能收到回复。因此，我们将“持续运行”理解为：clie
 ```toml
 [recovery]
 enabled = true
+mac_terminal = true
 restart_delay = 1.0
 restart_retry = 1.0
 ```
@@ -271,10 +252,12 @@ restart_retry = 1.0
 `replication.checkpoint_freq` 控制 passive checkpoint 周期。
 自动恢复必须通过配置启用，现有 M1–M4 配置仍是手动恢复。
 
-关闭顺序：停止 client，然后**先停 RM，再停 LFD**，最后停 GFD。
-正常停止 LFD 使用 Ctrl-C，它会终止并回收自己的 server 子进程，删除 PID 文件。
-最后关闭 `tail`。正常退出不要对 LFD 使用 `kill -9`，否则无法执行清理。
-日志会保留，便于回看。
+演示结束后先停三个 client，然后**先停 RM，再停 LFD**，最后停 GFD。在各自的 **LFD 窗口**
+按 Control+C，LFD 会终止自己的 server 并删除 PID 文件。可以关掉已经结束的窗口，日志会保留在磁盘上。
+
+没有图形桌面时，可设 `mac_terminal = false`。单机配置默认使用这个后台模式，Linux 和 WSL
+也使用后台模式。这时可以在 C 用 `tail -F logs/m5-active/S2.log` 看 S2 的日志，用
+`kill -KILL "$(cat logs/m5-active/S2.pid)"` 强制终止 S2。演示 passive 时换成对应日志目录。
 
 ## 自动测试与排错
 
@@ -283,6 +266,15 @@ restart_retry = 1.0
 .venv/bin/python scripts/m5_smoke.py
 .venv/bin/python scripts/m5_smoke.py --mode passive --first S2
 .venv/bin/python scripts/m5_smoke.py --demo-timing
+```
+
+要在一台已登录桌面的 Mac 上验证真实窗口，可以运行下面这条命令。
+测试会启动本地 RM、GFD 和三个客户端，在真实 Terminal 中向前台副本发送 Control+C
+和终端挂断信号，检查每种模式的三轮恢复。要实测红色关闭按钮，可把环境变量改为
+`M5_TEST_TERMINAL=confirm-close`，在 Terminal 询问是否关闭测试 S2 窗口时点**终止**。
+
+```bash
+M5_TEST_TERMINAL=1 .venv/bin/python -m pytest -q tests/integration/test_m5_mac_terminal.py
 ```
 
 Smoke 自动分配 loopback 端口，启动 11 个业务进程并实际杀掉副本。只有 LFD 可以
@@ -298,6 +290,7 @@ pytest 还会分别让 S1/S2/S3 先启动，覆盖两种模式。
 | 现象 | 检查内容 |
 | --- | --- |
 | LFD 已注册但 server 没启动 | RM/GFD 是否运行、配置是否一致、`recovery.enabled`、RM 是否收到 GFD membership 及 LFD 注册 |
+| Mac 提示没有自动化权限 | 在该副本所在 Mac 的“系统设置 → 隐私与安全性 → 自动化”里，允许启动 LFD 的 App 控制“终端”。保持 RM 和 LFD 运行，等待下一次重试。 |
 | 重复出现 `launch ... failed` 或子进程迅速退出 | LFD 诊断、server 日志、解释器与安装、配置路径、日志目录权限、端口占用 |
 | RM 显示 `external` | 已有手动启动的 server 响应，应先停止旧演示，再开始由 LFD 管理的 M5 演示 |
 | 成员数为三但 ready 不足三个 | checkpoint 端口连通性、donor/primary 日志、`i_am_ready`；先等状态同步完成 |

@@ -15,6 +15,10 @@ from ft_system.common.protocol import (
 from ft_system.common.retry import open_connection_with_timeout
 from ft_system.common.rm_link import RmLink
 from ft_system.common.transport import close_writer, read_message_with_timeout, write_message
+from ft_system.lfd.terminal import TerminalReplica, launch_terminal
+
+
+ReplicaProcess = asyncio.subprocess.Process | TerminalReplica
 
 
 class ReplicaSupervisor:
@@ -25,8 +29,10 @@ class ReplicaSupervisor:
     """
 
     def __init__(self, lfd: LfdConfig, server: ServerConfig, rm: RmConfig,
-                 config_path: str | Path, log_path: str | Path, logger: EventLogger):
+                 config_path: str | Path, log_path: str | Path, logger: EventLogger,
+                 *, mac_terminal: bool = False):
         self.lfd, self.server, self.logger = lfd, server, logger
+        self.mac_terminal = mac_terminal and sys.platform == "darwin"
         self.config_path = Path(config_path).resolve()
         self.log_path = Path(log_path).resolve()
         self.pid_path = self.log_path.with_suffix(".pid")
@@ -34,7 +40,7 @@ class ReplicaSupervisor:
         if len(set(paths)) != len(paths):
             raise ConfigError("replica log, PID, temporary PID, and config paths must be distinct")
         self.link = RmLink(lfd.lfd_id, "lfd", rm, logger, self._on_command)
-        self._process: asyncio.subprocess.Process | None = None
+        self._process: ReplicaProcess | None = None
         self._lock = asyncio.Lock()
         self._monitors: set[asyncio.Task] = set()
         self._closing = False
@@ -42,6 +48,8 @@ class ReplicaSupervisor:
     @property
     def pid(self) -> int | None:
         process = self._process
+        if isinstance(process, TerminalReplica):
+            return None if process.exited.done() else process.pid
         return process.pid if process is not None and process.returncode is None else None
 
     async def _on_command(self, message: dict) -> None:
@@ -72,6 +80,20 @@ class ReplicaSupervisor:
         finally:
             await close_writer(writer)
 
+    async def _launch(self) -> ReplicaProcess:
+        argv = [sys.executable, "-m", "ft_system.server.main", "--config", str(self.config_path),
+                "--server-id", self.server.replica_id]
+        source = str(Path(__file__).resolve().parents[2])
+        pythonpath = os.pathsep.join(filter(None, (source, os.environ.get("PYTHONPATH"))))
+        with self.log_path.open("ab", buffering=0) as output:
+            if self.mac_terminal:
+                return await launch_terminal(argv, pythonpath, self.log_path, self.server.replica_id)
+            return await asyncio.create_subprocess_exec(
+                *argv, stdout=output, stderr=asyncio.subprocess.STDOUT, stdin=asyncio.subprocess.DEVNULL,
+                env=os.environ | {"PYTHONPATH": pythonpath, "PYTHONUNBUFFERED": "1"},
+                start_new_session=(os.name == "posix"),
+            )
+
     async def ensure_running(self) -> dict:
         async with self._lock:
             if self._closing:
@@ -82,28 +104,18 @@ class ReplicaSupervisor:
                 return self._result("external", None, "existing heartbeat responder; no child launched")
             try:
                 self.log_path.parent.mkdir(parents=True, exist_ok=True)
-                # Use a fixed argv, local interpreter/config and no shell. PYTHONPATH
-                # is absolute so each host can keep its checkout in a different path.
-                source = str(Path(__file__).resolve().parents[2])
-                environment = os.environ | {
-                    "PYTHONPATH": source + os.pathsep + os.environ.get("PYTHONPATH", ""),
-                    "PYTHONUNBUFFERED": "1",
-                }
-                with self.log_path.open("ab", buffering=0) as output:
-                    launch = asyncio.create_task(asyncio.create_subprocess_exec(
-                        sys.executable, "-m", "ft_system.server.main", "--config", str(self.config_path),
-                        "--server-id", self.server.replica_id,
-                        stdout=output, stderr=asyncio.subprocess.STDOUT,
-                        stdin=asyncio.subprocess.DEVNULL, env=environment,
-                        start_new_session=(os.name == "posix"),
-                    ))
+                launch = asyncio.create_task(self._launch())
+                try:
+                    self._process = await asyncio.shield(launch)
+                except asyncio.CancelledError:
+                    # Cancellation during spawn must not orphan the newly created replica.
                     try:
-                        self._process = await asyncio.shield(launch)
-                    except asyncio.CancelledError:
-                        # Cancellation during spawn must not orphan the newly created child.
-                        self._process = await launch
-                        await self._stop_child(self._process)
-                        raise
+                        process = await launch
+                    except OSError:
+                        pass
+                    else:
+                        await self._stop_child(process)
+                    raise
                 process = self._process
                 temporary = self.pid_path.with_suffix(".pid.tmp")
                 temporary.write_text(f"{process.pid}\n", encoding="utf-8")
@@ -115,7 +127,7 @@ class ReplicaSupervisor:
                 monitor.add_done_callback(self._monitors.discard)
                 return self._result("started", process.pid, f"stdout: {self.log_path}")
             except OSError as exc:
-                if self._process is not None and self._process.returncode is None:
+                if self.pid is not None:
                     await self._stop_child(self._process)
                 self.logger.error(self.lfd.lfd_id, f"cannot launch {self.server.replica_id}: {exc}")
                 return self._result("failed", None, str(exc) or type(exc).__name__)
@@ -130,27 +142,27 @@ class ReplicaSupervisor:
         except OSError as exc:
             self.logger.error(self.lfd.lfd_id, f"cannot remove PID file: {exc}")
 
-    async def _watch(self, process: asyncio.subprocess.Process) -> None:
+    async def _watch(self, process: ReplicaProcess) -> None:
         code = await process.wait()
         self._remove_pid(process.pid)
+        exit_status = "" if code is None else f" code={code}"
         self.logger.event(f"{self.lfd.lfd_id}: {self.server.replica_id} pid={process.pid} "
-                          f"exited code={code}; waiting for RM", "failed")
+                          f"exited{exit_status}; waiting for RM", "failed")
 
     @staticmethod
-    async def _stop_child(process: asyncio.subprocess.Process) -> None:
-        if process.returncode is None:
+    async def _stop_child(process: ReplicaProcess) -> None:
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            pass
+        try:
+            await asyncio.wait_for(process.wait(), 3)
+        except TimeoutError:
             try:
-                process.terminate()
+                process.kill()
             except ProcessLookupError:
                 pass
-            try:
-                await asyncio.wait_for(process.wait(), 3)
-            except TimeoutError:
-                try:
-                    process.kill()
-                except ProcessLookupError:
-                    pass
-        await process.wait()
+            await process.wait()
 
     async def close(self) -> None:
         self._closing = True

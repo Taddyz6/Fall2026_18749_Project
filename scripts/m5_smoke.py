@@ -143,6 +143,9 @@ class Run:
                         "--count", str(self.requests))
         self.progress({c: 0 for c in CLIENTS}, 5)
 
+    def inject_crash(self, replica, pid):
+        os.kill(pid, signal.SIGKILL if os.name == "posix" else signal.SIGTERM)
+
     def crash_and_recover(self, replica):
         old_pid = self.pid(replica)
         assert old_pid is not None
@@ -150,7 +153,7 @@ class Run:
         before = self.counts()
         started = time.monotonic()
         # Actual crash fault. No test-harness call starts the replacement.
-        os.kill(old_pid, signal.SIGKILL if os.name == "posix" else signal.SIGTERM)
+        self.inject_crash(replica, old_pid)
         rm_log = lambda: self.log("RM")[offsets["RM"]:]
         self.wait_for(lambda: "RM: 2 members" in rm_log(), f"{replica} removal")
         # Reply confirmation and process launch can occur within one polling tick.

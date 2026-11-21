@@ -42,6 +42,7 @@ and document the checkpoint-dependent reply latency.
 | REQ-004 / AC-004 | M1–M4 configs retain manual startup/recovery. Invalid recovery config/messages fail clearly. LFD shutdown terminates/reaps only its owned child. | Config/protocol/CLI; TC-004 contract tests, TC-005 cleanup, existing regression suite |
 | REQ-005 / AC-005 | English and Chinese guides contain executable commands for four hosts, both three-fault sequences, log evidence, shutdown and troubleshooting. | Four configs, bilingual guides and smoke runner; TC-006 document/config review |
 | REQ-006 / AC-006 | After a successful passive reply, killing the primary cannot undo that request; retries do not apply it twice. Periodic checkpoints remain configured by `checkpoint_freq`. | Checkpoint ACK and reply gating; TC-007 TCP regressions and strengthened TC-002 process scenarios |
+| REQ-007 / AC-007 | On a demo Mac, an RM launch command opens a fresh Terminal window running the configured server. Ctrl+C or closing that window ends that PID. The next RM launch opens a new window and recovery reaches three ready replicas in either mode. | LFD terminal launch, TC-008 foreground lifecycle and both four-host guides |
 
 CON-001: Python >=3.11, asyncio/TCP, standard library only. Preserve periodic
 checkpoints and the per-client counter model. RM/GFD/LFD failures and network
@@ -54,8 +55,8 @@ wait until that replica is ready before starting the other LFDs.
 
 OOS-001: The user selected the M5 rubric scope. Runtime changes to replication
 style, replica count and timing through an RM admin API are a separate feature.
-No GUI, SSH provisioning or persistent recovery after loss of all replicas is
-included. REQ-006 adds confirmed-request retention within the existing fault model.
+The four-Mac demo uses Terminal.app. SSH provisioning and persistent recovery
+after loss of all replicas remain outside the scope.
 
 ## ADR-001: execute recovery on the replica's host
 
@@ -84,9 +85,14 @@ a healthy or ready replica.
   cancel the replacement's state transfer.
 - MOD-003: `lfd/supervisor.py`, `lfd/main.py`: connect outbound to RM, validate local
   ownership, launch only the configured Python server entry point, append stdout
-  to a local log and publish its PID. Serialize launches, retain the child handle,
-  reap exits, and terminate owned children on normal LFD shutdown. Probe the
+  to a local log and publish its PID. Serialize launches, track exits, and
+  terminate owned replicas on normal LFD shutdown. Probe the
   heartbeat endpoint before spawning to avoid replacing a manually running server.
+  With `recovery.mac_terminal = true` on macOS, `lfd/terminal.py` opens Terminal
+  and the foreground job passes its PID over a private Unix socket before
+  executing the server in the same PID. The socket closes when the server exits.
+  This lets the LFD track the replica across Ctrl+C or a window close. The default
+  local profile launches a direct child for unattended tests.
 - MOD-004: `scripts/m5_smoke.py`: launch real RM/GFD/LFD/client processes; only LFDs
   launch server processes. Inject actual process crashes; never relaunch servers
   from the test harness. Verify all six rubric scenarios and write JSON evidence.
@@ -96,7 +102,8 @@ a healthy or ready replica.
 IN-001: optional TOML `[recovery]`, `enabled` boolean (default false),
 `restart_delay` finite seconds >=0 (default 1), `restart_retry` finite seconds >0
 (default 1). Enabled recovery requires RM, GFD, replication and exactly one LFD
-per configured server. Example: `enabled = true`, `restart_delay = 1.0`,
+per configured server. The optional boolean `mac_terminal` defaults to false.
+Both four-host configs enable it for the macOS desktop demo. Example: `enabled = true`, `restart_delay = 1.0`,
 `restart_retry = 1.0`; `restart_retry = 0` is invalid. Missing section keeps M4.
 
 IF-001: LFD opens an existing RM TCP listener and sends `hello` with its configured
@@ -139,3 +146,24 @@ alias handling is outside the requested scope.
    cannot establish physical four-host connectivity; record that separately.
 
 See `m5-verification.md` for the final requirement/test matrix and evidence score.
+
+### TC-008 Mac foreground verification
+
+On 2026-11-20, `M5_TEST_TERMINAL=1 .venv/bin/python -m pytest -q` passed all
+249 tests on an Apple Silicon Mac. The foreground lifecycle test typed a Ctrl+C
+byte and closed a real pseudoterminal master. The desktop scenarios sent Ctrl+C
+and a terminal hangup to real Terminal.app foreground jobs. Each mode opened
+six distinct server windows across startup and three RM-directed replacements.
+All three clients received replies in every two-member interval. Each active
+client finished at 1200 and each passive client at 30, with matching replica state.
+
+For the hands-on close-button variant, Terminal can ask the operator to confirm
+termination. An unattended close request in that configuration left the replica
+running. Physical four-Mac LAN operation, the operator's confirmation, and Intel
+hardware are separate from the automated results above. The English and Chinese
+guides have the same ten shell command blocks and the same B/C/D readiness gates.
+
+Desktop change evidence score: **94/100** (acceptance 24/25, correctness 24/25,
+testing 17/20, architecture 9/10, maintainability 10/10, delivery 10/10).
+The remaining evidence is the hands-on four-Mac run. The macOS window adapter
+adds a local process-ownership handoff to the otherwise shared recovery path.

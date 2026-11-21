@@ -12,6 +12,7 @@ transfer_delay = 2.0
 # LFDs start and restart their local replicas only on RM commands.
 [recovery]
 enabled = true
+mac_terminal = true
 restart_delay = 1.0
 restart_retry = 1.0
 

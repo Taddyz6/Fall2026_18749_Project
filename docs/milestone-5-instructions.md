@@ -24,9 +24,9 @@ readiness. An OS process having started is not enough to mark it ready.
 | `configs/m5.passive.distributed.toml` | Four-computer passive demo |
 | `scripts/m5_smoke.py` | Automated local crash/recovery acceptance test |
 
-Use the same `m5` checkout on all four computers, with Python 3.11 or newer.
-The commands below use macOS/Linux shells; use WSL on Windows for the same commands.
-From the repository root on each computer:
+Use the same `m5` checkout on all four Macs, with Python 3.11 or newer. Intel
+and Apple Silicon Macs can run together. On each Mac, open Terminal and create
+its own virtual environment from that Mac's repository root.
 
 ```bash
 python3 -m venv .venv
@@ -42,9 +42,9 @@ demo first because the example configs reuse its ports.
 | Computer | Example IPv4 | Components | Inbound TCP ports |
 | --- | --- | --- | --- |
 | A (sacred) | `192.168.1.10` | RM, GFD, C1, C2, C3 | 7300, 7200 |
-| B | `192.168.1.11` | LFD1 and its child S1 | 5201, 6201, 8201 |
-| C | `192.168.1.12` | LFD2 and its child S2 | 5202, 6202, 8202 |
-| D | `192.168.1.13` | LFD3 and its child S3 | 5203, 6203, 8203 |
+| B | `192.168.1.11` | LFD1 and S1 | 5201, 6201, 8201 |
+| C | `192.168.1.12` | LFD2 and S2 | 5202, 6202, 8202 |
+| D | `192.168.1.13` | LFD3 and S3 | 5203, 6203, 8203 |
 
 Replace **every `advertised_host`** in both distributed configs: `[rm]` and `[gfd]`
 use A's current IPv4, and `[server.S1]`/S2/S3 use B/C/D's IPv4 respectively. Keep
@@ -60,10 +60,9 @@ the configs before opening the demo windows:
 .venv/bin/python -c 'from ft_system.common.config import load_config; c = load_config("configs/m5.active.distributed.toml"); print(c.recovery); print(c.servers)'
 ```
 
-There are **11 application processes**: RM, GFD, three LFDs, three server children,
-and three clients. Use 11 visible terminal windows: eight for directly launched
-components and three `tail` windows displaying the server logs. The `tail`
-processes are only log viewers, not additional fault-tolerance components.
+There are **11 application windows**. A has five for RM, GFD and the three clients.
+On each of B, C and D you open one LFD window. The LFD opens a second window
+for its own server when the RM requests it.
 
 ## Start the active demo
 
@@ -102,13 +101,11 @@ nc -vz 192.168.1.42 7200
 - If a command reports `timed out`, check the IP you entered, then check that
   the demo network and A's firewall allow connections to that port.
 
-Use two terminals on each of B, C and D. Terminal 1 runs the local LFD and shows
-its output. The RM on A tells the LFD when to start or restart the local server.
-The LFD writes the server's output to the file named by `--replica-log`.
-Once the LFD prints `launched` and the new PID, use `tail -n 80 -F` in terminal 2
-to show the TA the last 80 lines of the server log and new lines as they arrive.
-A restarted server writes to the same file, so the viewer keeps showing its output.
-Closing this viewer leaves the LFD and server running.
+Keep the LFD terminal running on each replica Mac. The two distributed configs
+enable `[recovery].mac_terminal = true`. If macOS asks for permission to control
+Terminal on first launch, choose **Allow**. Each new server window runs the
+actual replica in the foreground and shows its live output. The same output
+is also appended to the file named by `--replica-log` across restarts.
 
 **On B**, start LFD1 in terminal 1 before the other two LFDs.
 
@@ -119,11 +116,7 @@ Closing this viewer leaves the LFD and server running.
   --lfd-id LFD1 --replica-log logs/m5-active/S1.log
 ```
 
-Show S1's log in terminal 2 on B.
-
-```bash
-tail -n 80 -F logs/m5-active/S1.log
-```
+B sees **S1** open in its own window and begin printing.
 
 When the person on **A** sees `RM: S1 is ready (i_am_ready = 1)` in the RM terminal,
 they tell **C** to start LFD2. Run this command in terminal 1 on C.
@@ -135,11 +128,7 @@ they tell **C** to start LFD2. Run this command in terminal 1 on C.
   --lfd-id LFD2 --replica-log logs/m5-active/S2.log
 ```
 
-Show S2's log in terminal 2 on C.
-
-```bash
-tail -n 80 -F logs/m5-active/S2.log
-```
+C sees **S2** open in its own window.
 
 When the person on **A** sees `RM: S2 is ready (i_am_ready = 1)` in the RM terminal,
 they tell **D** to start LFD3. Run this command in terminal 1 on D.
@@ -151,11 +140,7 @@ they tell **D** to start LFD3. Run this command in terminal 1 on D.
   --lfd-id LFD3 --replica-log logs/m5-active/S3.log
 ```
 
-Show S3's log in terminal 2 on D.
-
-```bash
-tail -n 80 -F logs/m5-active/S3.log
-```
+D sees **S3** open in its own window.
 
 When **A** sees `RM: S3 is ready (i_am_ready = 1)` in its RM terminal, check that
 the latest view shows `members: S1, S2, S3; ready: S1, S2, S3`. Open three more
@@ -174,23 +159,18 @@ file; the LFD rejects directly repeated paths before launching.
 
 ## Active fault sequence
 
-Use the current PID written by the local LFD; it changes after every relaunch.
-For example, on **C**:
-
-```bash
-cat logs/m5-active/S2.pid
-ps -p "$(cat logs/m5-active/S2.pid)" -o pid=,command=
-kill -KILL "$(cat logs/m5-active/S2.pid)"
-```
-
-The command should identify `ft_system.server.main --server-id S2`. Kill the
-server, leaving its LFD running. **Ctrl-C in a `tail` window only stops the viewer**;
-it does not inject a replica crash. Do not run a separate server launch command.
+On **C**, click the **S2 server window** and press **Control+C**. The server
+handles this interrupt by exiting. You can also click the red close button on
+that server window and confirm **Terminate** if Terminal asks. Leave the LFD2
+window open. Watch for a **new S2 window** when RM asks LFD2 to restart it.
+If the old window displays `[Process completed]`, use the new window for the
+next fault. Wait for A to confirm three ready replicas before the next round. Control+Z
+only suspends the process and leaves its ports occupied.
 
 | Round | Action | Required evidence |
 | --- | --- | --- |
 | 1 | Kill any replica, e.g. S2 | LFD detects failure; GFD/RM show two members; clients progress; RM asks LFD2 to launch; a new S2 PID appears; state transfers; three replicas become ready |
-| 2 | After full recovery, kill that same S2 again using its new PID | Repeat the full automatic cycle, including a second state transfer |
+| 2 | After full recovery, close the **new S2 window** and confirm termination | Repeat the full automatic cycle, including a second state transfer |
 | 3 | After full recovery, kill another replica, e.g. S3 on D | Repeat; all three clients continue and all three replicas become ready again |
 
 For every recovery, observe this order:
@@ -225,7 +205,8 @@ uses S1 as the initial primary; always follow the actual RM view.
 | 2 | Kill the recovered S1 backup again | RM/LFD1 recover it as a backup again; current primary continues replying and checkpointing |
 | 3 | Kill the other backup (not the current primary) | That backup automatically returns, receives checkpoints, and all three replicas are ready again |
 
-Use the same PID-based kill command with `logs/m5-passive/<replica>.pid`. Verify:
+Use Control+C or close the **current server window** for the replica in each
+round. Its local LFD opens the replacement window automatically. Check the following.
 
 - `RM: primary S1 failed; new primary is ...`, plus each client's `primary changed`.
 - The new primary sends checkpoints and answers all three clients.
@@ -298,6 +279,7 @@ Suggested explanation during the demo:
 ```toml
 [recovery]
 enabled = true
+mac_terminal = true
 restart_delay = 1.0
 restart_retry = 1.0
 ```
@@ -310,10 +292,15 @@ but hung child is not duplicated. `rm.transfer_delay` retains the active demo's
 state-transfer delay, and `replication.checkpoint_freq` controls passive snapshots.
 The recovery section is opt-in; existing M1–M4 configs remain manual.
 
-Stop clients, then **RM before LFDs**, then stop each LFD with Ctrl-C, then GFD.
-LFD shutdown terminates and reaps its owned server and removes its PID file.
-Stop the `tail` viewers last. Do not use `kill -9` on an LFD for normal teardown;
-the LFD needs to run its cleanup. Logs remain available for review.
+Stop clients, then **RM before LFDs**, then press Control+C in each **LFD**
+window, and finally stop GFD. Each LFD stops its server and removes its PID file.
+You can close any finished windows. The server logs stay on disk.
+
+For a headless run set `mac_terminal = false` (the local configs already use
+this default). Linux and WSL use the same background mode. In that mode you
+can view S2 with `tail -F logs/m5-active/S2.log` and inject a hard crash on C
+with `kill -KILL "$(cat logs/m5-active/S2.pid)"`. Use the passive log directory
+for a passive run.
 
 ## Tests and troubleshooting
 
@@ -322,6 +309,16 @@ the LFD needs to run its cleanup. Logs remain available for review.
 .venv/bin/python scripts/m5_smoke.py
 .venv/bin/python scripts/m5_smoke.py --mode passive --first S2
 .venv/bin/python scripts/m5_smoke.py --demo-timing
+```
+
+To exercise the actual Mac windows with a local RM, GFD and three clients,
+run the following in a logged-in desktop session. It sends Control+C and the
+terminal hangup signal to real foreground replicas and checks three recoveries per mode.
+For a hands-on check of the red close button, use `M5_TEST_TERMINAL=confirm-close`
+instead and click **Terminate** when Terminal asks to close the test S2 window.
+
+```bash
+M5_TEST_TERMINAL=1 .venv/bin/python -m pytest -q tests/integration/test_m5_mac_terminal.py
 ```
 
 The smoke runner allocates loopback ports, launches all 11 application processes,
@@ -339,6 +336,7 @@ sequences above separately and keep the console logs as physical-network evidenc
 | Symptom | Check |
 | --- | --- |
 | LFD registered but no replica starts | RM/GFD running; identical config; `[recovery].enabled`; RM's GFD membership report and LFD registration |
+| Mac shows a Terminal automation error | On that replica Mac, allow the launching app to control Terminal in System Settings → Privacy & Security → Automation. Keep RM and the LFD running for the next retry. |
 | Repeated `launch ... failed` or rapid child exits | LFD diagnostics and server log; interpreter/install; local config path; writable log directory; occupied ports |
 | RM receives `external` launch status | A manually started server is responding; stop that earlier demo before beginning a managed M5 run |
 | Three members but fewer ready | Check checkpoint ports/connectivity, donor/primary logs and `i_am_ready`; do not inject another fault yet |
